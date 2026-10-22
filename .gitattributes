@@ -1,0 +1,9 @@
+# Charter bytes are hashed; line endings must never be rewritten.
+* text=auto
+charters/** text eol=lf
+*.rs text eol=lf
+*.Modelfile text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.wasm binary
