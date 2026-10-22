@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod gates;
+pub mod modelfile;
 pub mod vendor;
 
 use std::fmt;
@@ -26,6 +27,7 @@ pub enum XtaskError {
     Seed(hcc_seed::SeedError),
     GatesFailed(usize),
     Vendor(String),
+    Modelfile(&'static str),
 }
 
 impl fmt::Display for XtaskError {
@@ -40,6 +42,7 @@ impl fmt::Display for XtaskError {
             Self::Seed(err) => write!(f, "seed: {err}"),
             Self::GatesFailed(n) => write!(f, "{n} gate(s) failed"),
             Self::Vendor(msg) => write!(f, "freeze-vendor: {msg}"),
+            Self::Modelfile(msg) => write!(f, "modelfile: {msg}"),
         }
     }
 }
