@@ -18,12 +18,16 @@ pub const RUNNER_CHAT_PATH: &str = "/api/chat";
 /// Local generation can be slow on CPU; still bounded.
 pub const RUNNER_TIMEOUT: Duration = Duration::from_secs(300);
 pub const RUNNER_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+/// How much of a runner's error reply is passed back to the operator.
+pub const RUNNER_DETAIL_MAX_CHARS: usize = 200;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunnerError {
     Unreachable,
     Timeout,
-    Status(u16),
+    /// The runner's HTTP status and its own error text (Ollama's `error` field, or the raw
+    /// body), trimmed to `RUNNER_DETAIL_MAX_CHARS`.
+    Status(u16, String),
     Protocol,
     BadResponse,
 }
@@ -33,7 +37,7 @@ impl RunnerError {
     pub const ALL: [RunnerError; 5] = [
         RunnerError::Unreachable,
         RunnerError::Timeout,
-        RunnerError::Status(0),
+        RunnerError::Status(0, String::new()),
         RunnerError::Protocol,
         RunnerError::BadResponse,
     ];
@@ -42,10 +46,45 @@ impl RunnerError {
         match self {
             Self::Unreachable => "runner unreachable on 127.0.0.1:11434",
             Self::Timeout => "runner timed out",
-            Self::Status(_) => "runner returned a non-success HTTP status",
+            Self::Status(..) => "runner returned a non-success HTTP status",
             Self::Protocol => "runner HTTP exchange failed",
             Self::BadResponse => "runner response has no message.content",
         }
+    }
+
+    /// The `error` value sent to the operator: the fixed wire string, and for a non-2xx reply
+    /// the runner's status and what it said, quoted as received (never invented).
+    pub fn message(&self) -> String {
+        match self {
+            Self::Status(code, detail) if detail.is_empty() => {
+                format!("{}: HTTP {code}", self.wire())
+            }
+            Self::Status(code, detail) => format!("{}: HTTP {code}: {detail}", self.wire()),
+            _ => self.wire().to_owned(),
+        }
+    }
+}
+
+/// Ollama's `{"error": "..."}` text if present, else the body itself; control characters
+/// dropped and cut to `RUNNER_DETAIL_MAX_CHARS`.
+fn runner_detail(body: &[u8]) -> String {
+    let text = match serde_json::from_slice::<Value>(body) {
+        Ok(Value::Object(map)) => match map.get("error") {
+            Some(Value::String(err)) => err.clone(),
+            _ => String::from_utf8_lossy(body).into_owned(),
+        },
+        _ => String::from_utf8_lossy(body).into_owned(),
+    };
+    let clean: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let clean = clean.trim();
+    if clean.chars().count() > RUNNER_DETAIL_MAX_CHARS {
+        let cut: String = clean.chars().take(RUNNER_DETAIL_MAX_CHARS).collect();
+        format!("{cut}…")
+    } else {
+        clean.to_owned()
     }
 }
 
@@ -107,7 +146,10 @@ async fn exchange(
         .to_bytes();
     driver.abort();
     if !status.is_success() {
-        return Err(RunnerError::Status(status.as_u16()));
+        return Err(RunnerError::Status(
+            status.as_u16(),
+            runner_detail(&collected),
+        ));
     }
     let parsed: Value = serde_json::from_slice(&collected).map_err(|_| RunnerError::BadResponse)?;
     parsed

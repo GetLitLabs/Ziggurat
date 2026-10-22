@@ -181,9 +181,9 @@ async fn runner_down_is_502_and_nothing_is_appended() -> TestResult {
 async fn runner_error_status_and_bad_body_are_502() -> TestResult {
     for (reply, status, wire) in [
         (
-            json!({"error": "model not found"}),
+            json!({"error": "model \"ziggurat:1.0.0\" not found, try pulling it first"}),
             StatusCode::NOT_FOUND,
-            "runner returned a non-success HTTP status",
+            "runner returned a non-success HTTP status: HTTP 404: model \"ziggurat:1.0.0\" not found, try pulling it first",
         ),
         (
             json!({"done": true}),
@@ -297,6 +297,62 @@ async fn sealed_without_ledger_is_held() -> TestResult {
     let (code, body) = post_dispatch(state, loopback(), GOOD).await?;
     assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["error"], dispatch_error::NO_LEDGER);
+    Ok(())
+}
+
+#[tokio::test]
+async fn installed_ollama_names_pass_the_model_allow_list() -> TestResult {
+    // Names from a real `ollama list`: a tag, and a hf.co path with underscores.
+    for model in [
+        "cogito:latest",
+        "hf.co/kusonooyasumi/qwen-2.5-coder-1.5b-svelte:Q4_K_M",
+    ] {
+        let db = scratch("names")?;
+        let body = json!({
+            "model": model,
+            "bsmc_namespace": "genie.dispatch.local",
+            "terrace_level": 3,
+            "operator_prompt": "p",
+        })
+        .to_string();
+        let (code, reply) =
+            post_dispatch(sealed_state(&db, dead_port().await?), loopback(), &body).await?;
+        // Validation passed; the request got as far as the (absent) runner.
+        assert_eq!(code, StatusCode::BAD_GATEWAY, "{model}");
+        assert_eq!(
+            reply["error"], "runner unreachable on 127.0.0.1:11434",
+            "{model}"
+        );
+        if let Some(dir) = db.parent() {
+            std::fs::remove_dir_all(dir)?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn runner_error_detail_is_trimmed_and_flattened() -> TestResult {
+    let db = scratch("long")?;
+    let long = format!("line one\nline two {}", "x".repeat(500));
+    let runner = fake_runner(json!({ "error": long }), StatusCode::INTERNAL_SERVER_ERROR).await?;
+    let (code, body) = post_dispatch(sealed_state(&db, runner), loopback(), GOOD).await?;
+    assert_eq!(code, StatusCode::BAD_GATEWAY);
+    let error = body["error"].as_str().unwrap_or_default();
+    let prefix = "runner returned a non-success HTTP status: HTTP 500: line one line two x";
+    assert!(error.starts_with(prefix), "{error}");
+    assert!(error.ends_with('…') && !error.contains('\n'), "{error}");
+    assert_eq!(
+        error.chars().count(),
+        "runner returned a non-success HTTP status: HTTP 500: "
+            .chars()
+            .count()
+            + hcc_daemon::ramgenie::RUNNER_DETAIL_MAX_CHARS
+            + 1
+    );
+    assert_eq!(Stele::open(&db)?.len()?, 1);
+    if let Some(dir) = db.parent() {
+        std::fs::remove_dir_all(dir)?;
+    }
     Ok(())
 }
 

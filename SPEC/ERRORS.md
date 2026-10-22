@@ -40,13 +40,13 @@ Body is `{"error": "<value>"}`. Nothing is appended to BATON or the stele on any
 | `dispatch body must be JSON {model, bsmc_namespace, terrace_level, operator_prompt}` | 400 | malformed JSON, missing or unknown fields |
 | `terrace_level must be 1..=5` | 400 | terrace outside 1..=5 |
 | `bsmc_namespace must be dot-separated` | 400 | namespace without a dot or with an empty segment |
-| `model must be 1-128 chars of [A-Za-z0-9._:/-]` | 400 | model name fails the allow-list |
+| `model must be 1-128 chars of [A-Za-z0-9_.:/-]` | 400 | model name fails the allow-list |
 | `operator_prompt must not be empty` | 400 | empty prompt |
 | `charter not royal-sealed; dispatch forbidden` | 403 | charter is not `RoyalSealed` |
 | `stele or BATON ledger not open; dispatch held` | 503 | sealed, but the vault did not open or verify at boot |
 | `runner unreachable on 127.0.0.1:11434` | 502 | nothing listening on the runner port |
 | `runner timed out` | 502 | no full reply within 300 s |
-| `runner returned a non-success HTTP status` | 502 | runner answered with a non-2xx status |
+| `runner returned a non-success HTTP status` | 502 | runner answered with a non-2xx status; the value continues `: HTTP <code>: <runner error>`, quoting the runner's `error` text (or body) with control characters dropped, cut at 200 characters |
 | `runner HTTP exchange failed` | 502 | HTTP/1.1 exchange with the runner broke |
 | `runner response has no message.content` | 502 | runner reply is not Ollama `/api/chat` JSON |
 | `ledger lock poisoned` | 500 | an earlier panic poisoned the ledger lock |

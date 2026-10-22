@@ -294,7 +294,7 @@ pub mod dispatch_error {
         "dispatch body must be JSON {model, bsmc_namespace, terrace_level, operator_prompt}";
     pub const BAD_TERRACE: &str = "terrace_level must be 1..=5";
     pub const BAD_NAMESPACE: &str = "bsmc_namespace must be dot-separated";
-    pub const BAD_MODEL: &str = "model must be 1-128 chars of [A-Za-z0-9._:/-]";
+    pub const BAD_MODEL: &str = "model must be 1-128 chars of [A-Za-z0-9_.:/-]";
     pub const EMPTY_PROMPT: &str = "operator_prompt must not be empty";
     pub const UNSEALED: &str = "charter not royal-sealed; dispatch forbidden";
     pub const NO_LEDGER: &str = "stele or BATON ledger not open; dispatch held";
@@ -397,7 +397,7 @@ async fn ramgenie_dispatch(
         ramgenie::RUNNER_TIMEOUT,
     )
     .await
-    .map_err(|err| refuse(StatusCode::BAD_GATEWAY, err.wire().into()))?;
+    .map_err(|err| refuse(StatusCode::BAD_GATEWAY, err.message()))?;
 
     let mut ledgers = ledgers
         .lock()
