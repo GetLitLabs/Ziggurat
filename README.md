@@ -17,10 +17,11 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `hcc-baton` | `hcc_baton_trace_ledger`: frozen envelope, hash-chained traces, record + replay, abort triggers |
 | `hcc-vanguard` | 35-entry job table with JSON handoff; `scribe.stele.append` and `seed.scaffold.emit` live; `inspect.gate.validate` `Err(Unwired)`; the rest `Err(Unimplemented)` |
 | `hcc-seed` | M05 Code A Seed: validated blueprint JSON → `crates/<name>` (Cargo.toml, lib, schema tests, WAL); deterministic; adds the workspace member; `cargo check --offline`, rolled back on failure; never overwrites |
+| `hcc-wasi-healer` | M04: wasmi 2 (pure Rust interpreter) sandbox with a 10M fuel cap, 16 MiB memory cap, one instance and zero host imports (any import, WASI `path_open` included, is refused before instantiation). `diagnose` runs the start section and `_start`, then reports exported memories and fuel used. `fixtures/healer_empty.wasm` is the 8-byte empty module. Not wired into Vanguard or the daemon; `healer.patch.apply` stays TYPED |
 | `capsnap` | Demo crate written by `xtask seed blueprints/capsnap.json`; pinned to its blueprint by a drift test |
 | `hcc-daemon` | Loopback-only on 127.0.0.1:7749: `GET /v1/ziggurat/pillar/{module_id}/status` and `POST /v1/ramgenie/dispatch`; opens the stele and BATON ledger on a sealed boot |
 
-No Tauri, cockpit, healer, or gates script yet. Krypt and Vanguard are not wired into the daemon. Nothing here is operations-ready until
+No Tauri, cockpit, or gates script yet. Krypt and Vanguard are not wired into the daemon. Nothing here is operations-ready until
 `cargo test --workspace` passes on the operator machine.
 
 ## Seal ceremony (operator machine)

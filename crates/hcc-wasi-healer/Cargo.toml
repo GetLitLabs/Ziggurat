@@ -1,0 +1,17 @@
+[package]
+name = "hcc-wasi-healer"
+description = "T2 WASI Healer (M04): fuel- and memory-capped wasm sandbox with no host imports; diagnose-only."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+wasmi = { version = "2", default-features = false, features = ["std", "validate", "stable", "auto-dispatch"] }
+blake3.workspace = true
+
+[dev-dependencies]
+wat = "1"
+
+[lints]
+workspace = true

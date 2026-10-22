@@ -311,6 +311,10 @@ one stele row `HCC-SEED-v1\nname=…\nblueprint_blake3_hex=…\nfile=<path> <bla
 `cargo run -p hcc-xtask -- seed blueprints/<name>.json`; `blueprints/capsnap.json` → `crates/capsnap` is the
 committed demo, and a test fails if those files drift from the blueprint.
 
+`hcc-wasi-healer` (M04) implements `wasi.sandbox.lock` as `SandboxPolicy::LOCKED` (fuel 10,000,000; linear memory
+16 MiB; module ≤ 4 MiB; one instance; `declared_paths` empty, so no host imports are linked and any import is refused)
+and `healer.diagnose.heap` as `diagnose(wasm, &policy)`. Both are crate functions; as Vanguard jobs they remain TYPED.
+
 BATON envelope inputs: `prompt_hash = BLAKE3(prompt)`, `response_hash = BLAKE3(response)`,
 `terrace_u8` is one byte. Ledger `prev_digest` = previous row's envelope; replay recomputes each
 envelope under the sealed charter digest.

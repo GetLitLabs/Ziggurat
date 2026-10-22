@@ -10,6 +10,7 @@ members = [
     "crates/hcc-baton",
     "crates/hcc-vanguard",
     "crates/hcc-seed",
+    "crates/hcc-wasi-healer",
     "crates/hcc-daemon",
     "crates/capsnap",
 ]
