@@ -123,6 +123,7 @@ pub fn render_baked(byte_len: usize, digest: &[u8; 32], royal: Option<&RoyalSeal
          // charter_blake3_hex {hex}\n\
          {import}\n\
          \n\
+         #[rustfmt::skip]\n\
          pub const BAKED_SEAL: Option<SealConstants> = Some(SealConstants {{\n    \
          byte_len: {byte_len},\n    \
          blake3: {digest_src},\n    \

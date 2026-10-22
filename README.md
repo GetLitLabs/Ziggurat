@@ -5,9 +5,33 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 
 ## What exists today
 
-The repo skeleton only: CHARTER_GOAL.md, INDEX.md, .gitattributes, .gitignore, keys/.gitkeep, and an empty
-workspace Cargo.toml. No crates are members yet, so nothing is sealed and nothing is operations-ready.
-The charter file charters/ZIGGURAT_v1.0.0.txt has not been written; xtask cannot seal until it exists.
+| Piece | State |
+|---|---|
+| `charters/ZIGGURAT_v1.0.0.txt` | Frozen: 4660 bytes, LF only, no BOM |
+| `hcc-types` | `TerraceLevel` (1..=5), `BsmcNamespace` (must contain a dot) |
+| `hcc-seal` | `no_std`; domain-separated BLAKE3, Ed25519 verify, `SystemCharter<Unsealed>` / `<RoyalSealed>` |
+| `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene` |
+| `crates/hcc-seal/src/baked.rs` | Length + digest baked; **no royal seal yet**, so the charter stays Unsealed |
+
+No daemon, stele, Tauri, or cockpit yet. Nothing here is operations-ready until
+`cargo test --workspace` passes on the operator machine.
+
+## Seal ceremony (operator machine)
+
+```bash
+cargo run -p hcc-xtask -- hygiene charters/ZIGGURAT_v1.0.0.txt
+cargo run -p hcc-xtask -- keygen                      # writes keys/operator.key (0600) + keys/operator.pub; never commit
+cargo run -p hcc-xtask -- sign-charter charters/ZIGGURAT_v1.0.0.txt --key keys/operator.key
+cargo run -p hcc-xtask -- seal-charter charters/ZIGGURAT_v1.0.0.txt \
+  --pubkey keys/operator.pub --sig keys/charter.sig   # rewrites crates/hcc-seal/src/baked.rs
+cargo test -p hcc-seal
+```
+
+`seal-charter` prints two hashes. `charter_blake3_hex` is the seal:
+`BLAKE3(b"HCC-STELLE-v2\x00" || bytes)`. `raw_b3sum_hex` is what plain `b3sum` prints,
+shown only for comparison; the two never match. Re-running `seal-charter` on the same
+file must produce a byte-identical `baked.rs`; if it does not, the file has a CRLF or BOM
+fault, not a crypto fault.
 
 ## Target layout (crates appear here only once they compile)
 
@@ -44,7 +68,5 @@ ziggurat/
 
 ## Plumb line (next)
 
-1. `cargo run -p hcc-xtask -- seal-charter charters/ZIGGURAT_v1.0.0.txt --pubkey keys/operator.pub --sig keys/charter.sig`
-2. hcc-seal verifies length, BLAKE3(b"HCC-STELLE-v2\x00" || bytes), and Ed25519.
-3. `cargo run -p hcc-daemon` then `curl http://127.0.0.1:7749/v1/ziggurat/pillar/M09-RamGenie/status`
-   must report the same digest as hashing the charter file with the same domain prefix.
+`hcc-daemon` GET `/v1/ziggurat/pillar/{module_id}/status` on 127.0.0.1:7749, after the
+operator confirms the step 4 gate. Its `charter_blake3_hex` must equal `seal-charter`'s.
