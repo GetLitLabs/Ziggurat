@@ -262,3 +262,46 @@ fn record_then_rolls_back_the_trace_when_the_follow_up_fails() -> TestResult {
     assert_eq!(ledger.replay(&charter())?, 1);
     Ok(())
 }
+
+#[test]
+fn replay_follows_the_charter_lineage_forward_only() -> TestResult {
+    let old = charter();
+    let new = charter_digest(b"next charter\n");
+    let mut ledger = BatonLedger::open_in_memory()?;
+    ledger.record(
+        &old,
+        "genie.dispatch.local",
+        TerraceLevel::Workforce,
+        b"p1",
+        b"r1",
+    )?;
+    ledger.record(
+        &new,
+        "genie.dispatch.local",
+        TerraceLevel::Workforce,
+        b"p2",
+        b"r2",
+    )?;
+    assert_eq!(ledger.replay_lineage(&[old, new])?, 2);
+    assert!(matches!(
+        ledger.replay(&old),
+        Err(BatonError::ReplayMismatch { trace_id: 2 })
+    ));
+    assert!(matches!(
+        ledger.replay(&new),
+        Err(BatonError::ReplayMismatch { trace_id: 1 })
+    ));
+    // Out of order lineage: trace 2 would have to step back to an older charter.
+    ledger.record(
+        &old,
+        "genie.dispatch.local",
+        TerraceLevel::Workforce,
+        b"p3",
+        b"r3",
+    )?;
+    assert!(matches!(
+        ledger.replay_lineage(&[old, new]),
+        Err(BatonError::ReplayMismatch { trace_id: 3 })
+    ));
+    Ok(())
+}
