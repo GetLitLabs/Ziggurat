@@ -1,0 +1,56 @@
+# Ziggurat v1.0.0 workspace. Members are crates that compile, nothing else.
+[workspace]
+resolver = "2"
+members = [
+    "crates/hcc-types",
+    "crates/hcc-seal",
+    "crates/hcc-xtask",
+    "crates/hcc-iedb-stele",
+    "crates/hcc-krypt",
+    "crates/hcc-baton",
+    "crates/hcc-vanguard",
+    "crates/hcc-seed",
+    "crates/hcc-wasi-healer",
+    "crates/hcc-daemon",
+    "crates/capsnap",
+    "src-tauri",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "LicenseRef-HCC-Sovereign-Perpetual"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+
+[workspace.dependencies]
+hcc-types = { path = "crates/hcc-types" }
+hcc-seed = { path = "crates/hcc-seed" }
+hcc-krypt = { path = "crates/hcc-krypt" }
+hcc-wasi-healer = { path = "crates/hcc-wasi-healer" }
+hcc-xtask = { path = "crates/hcc-xtask" }
+hcc-daemon = { path = "crates/hcc-daemon" }
+hcc-seal = { path = "crates/hcc-seal" }
+hcc-iedb-stele = { path = "crates/hcc-iedb-stele" }
+hcc-baton = { path = "crates/hcc-baton" }
+hcc-vanguard = { path = "crates/hcc-vanguard" }
+blake3 = { version = "1.8", default-features = false }
+ed25519-dalek = { version = "2.1", default-features = false }
+getrandom = "0.2"
+hex = "0.4"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower = { version = "0.5", features = ["util"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+zeroize = "1"

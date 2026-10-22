@@ -1,0 +1,26 @@
+[package]
+name = "hcc-xtask"
+description = "T2 operator tooling: keygen, sign-charter, seal-charter (writes hcc-seal/src/baked.rs), seed, gates (M11 nine-gates audit)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+hcc-seal.workspace = true
+hcc-seed.workspace = true
+hcc-types.workspace = true
+hcc-iedb-stele.workspace = true
+hcc-baton.workspace = true
+hcc-krypt.workspace = true
+hcc-wasi-healer.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
+getrandom.workspace = true
+hex.workspace = true
+zeroize = "1"
+
+[lints]
+workspace = true

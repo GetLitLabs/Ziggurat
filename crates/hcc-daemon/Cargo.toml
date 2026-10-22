@@ -1,0 +1,30 @@
+[package]
+name = "hcc-daemon"
+description = "T2 Accordion.be: loopback-only HTTP on 127.0.0.1:7749. Pillar status and sealed RamGenie dispatch."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+hcc-seal.workspace = true
+hcc-iedb-stele.workspace = true
+hcc-baton.workspace = true
+hcc-types.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+
+[dev-dependencies]
+blake3.workspace = true
+ed25519-dalek.workspace = true
+serde_json.workspace = true
+tower.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
+[lints]
+workspace = true

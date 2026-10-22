@@ -1,0 +1,20 @@
+[package]
+name = "ziggurat-desktop"
+description = "T3 Tauri 2 shell: boots Accordion.be in-process and hosts the origami cockpit."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "ziggurat_desktop"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+hcc-daemon.workspace = true
+tauri = { version = "2", features = [] }
+
+[lints]
+workspace = true

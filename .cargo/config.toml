@@ -1,0 +1,7 @@
+# Written by `cargo run -p hcc-xtask -- freeze-vendor`; committed with vendor/ so clones build offline.
+# After changing dependencies, re-run freeze-vendor and commit vendor/ and this file.
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"

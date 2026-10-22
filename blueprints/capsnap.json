@@ -1,0 +1,14 @@
+{
+  "name": "capsnap",
+  "summary": "Capture snapshots in a WAL SQLite vault",
+  "tables": [
+    {
+      "name": "snap",
+      "columns": [
+        { "name": "label", "type": "TEXT" },
+        { "name": "captured_at_utc", "type": "TEXT" },
+        { "name": "payload", "type": "BLOB" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Cockpit window. No Tauri commands or plugins: it reads 127.0.0.1:7749 over fetch only.",
+  "windows": ["main"],
+  "permissions": []
+}

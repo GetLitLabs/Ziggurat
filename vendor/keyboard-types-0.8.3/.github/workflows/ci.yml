@@ -1,0 +1,48 @@
+on: [push, pull_request]
+
+name: Continuous integration
+
+jobs:
+  check-test:
+    name: Check and test crate
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        toolchain:
+          - stable
+          - "1.61"
+          - "1.81"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      # All features
+      - run: cargo check --all-targets --all-features
+      - run: cargo test --all-features
+      # No default features. Only works on Rust 1.81
+      - if: matrix.toolchain != 1.61
+        run: cargo check --all-targets --no-default-features
+      - if: matrix.toolchain != 1.61
+        run: cargo test --no-default-features
+
+  clippy-fmt:
+    name: Run Clippy and format code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo fmt --check
+
+  check-docs:
+    name: Check the docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo doc --all-features --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: '-D warnings'

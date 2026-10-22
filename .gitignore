@@ -5,3 +5,6 @@
 *.db
 *.db-wal
 *.db-shm
+/src-tauri/gen/
+# vendor/ is committed byte for byte; no ignore rule may drop a vendored file.
+!/vendor/**
