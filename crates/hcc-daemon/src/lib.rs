@@ -146,9 +146,10 @@ impl SteleBoot {
                     .ensure_genesis(sealed, royal)
                     .map_err(|e| e.to_string())?;
                 let rows = stele.verify_chain().map_err(|e| e.to_string())?;
-                Ok((stele, genesis, rows))
+                let lineage = stele.lineage().map_err(|e| e.to_string())?;
+                Ok((stele, genesis, rows, lineage))
             });
-        let (stele, genesis, rows) = match opened {
+        let (stele, genesis, rows, lineage) = match opened {
             Ok(opened) => opened,
             Err(err) => {
                 return Self {
@@ -162,13 +163,19 @@ impl SteleBoot {
             Genesis::Created(_) => "appended",
             Genesis::Present(_) => "found",
         };
+        let charter_version = lineage
+            .last()
+            .map(|epoch| epoch.version.as_str())
+            .unwrap_or("?");
         let stele_note = format!(
-            "genesis {verb} in {}; chain verified, {rows} row(s); genesis blake3 {}",
+            "genesis {verb} in {}; chain verified, {rows} row(s); genesis blake3 {}; charter v{charter_version} ({} version(s) in lineage)",
             db_path.display(),
-            digest_hex(&genesis.row().blake3_digest)
+            digest_hex(&genesis.row().blake3_digest),
+            lineage.len()
         );
         let baton = BatonLedger::open(db_path).and_then(|baton| {
-            let traces = baton.replay(sealed.digest())?;
+            let digests: Vec<_> = lineage.iter().map(|epoch| epoch.digest).collect();
+            let traces = baton.replay_lineage(&digests)?;
             Ok((baton, traces))
         });
         match baton {

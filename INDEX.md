@@ -76,7 +76,7 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | M04 | `M04-WasiHealer` | WASI Healer | `wasi.*` `healer.*` | **LIVE** (fixture) | `hcc-wasi-healer` |
 | M05 | `M05-CodeASeed` | Code A Seed | `seed.*` `ziggurat.*` | **LIVE** | `hcc-seed` |
 | M06 | `M06-Polymorph` | Polymorphic Engine | `polymorph.*` | TYPED | xtask target-cpu only |
-| M07 | `M07-Genesis` | Genesis / Chare | `genesis.*` `chare.*` | TYPED | metadata on stele rows |
+| M07 | `M07-Genesis` | Genesis / Chare | `genesis.*` `chare.*` | **LIVE** (charter versions) / TYPED (chare) | `hcc-iedb-stele` |
 | M08 | `M08-ZeroTrace` | Zero-Trace | `zerotrace.*` `trace.*` | TYPED | crypto-shred only when built |
 | M09 | `M09-RamGenie` | RamGenie | `genie.*` | **LIVE** | `hcc-daemon` |
 | M10 | `M10-Baton` | BATON / Konjure / Curie-Monet | `baton.*` `konjure.*` `curie_monet.*` | **LIVE** (BATON) / TYPED (rest) | `hcc-baton` |
@@ -104,7 +104,7 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `ziggurat.daemon.boot` | M05/M02 | LIVE |
 | `polymorph.workspace.init` | M06 | TYPED |
 | `polymorph.emit.native` | M06 | TYPED |
-| `genesis.charter.version` | M07 | TYPED |
+| `genesis.charter.version` | M07 | LIVE — `Stele::record_charter_version`, `lineage` |
 | `chare.provenance.tag` | M07 | TYPED — 67/30/3 metadata |
 | `zerotrace.key.destroy` | M08 | TYPED |
 | `krypt.death.keyDestroy` | M08 | TYPED |
@@ -253,6 +253,23 @@ Runner down → 502, UI red, no forged BATON.
 
 `blake3_digest = BLAKE3(domain || prev_digest || payload)`  
 Genesis `prev_digest` = 32×`0x00`.
+
+### 9.3 Charter lineage (M07 `genesis.charter.version`)
+
+A charter edit means a new version and a new seal. The vault keeps its stele across the bump through
+rows in the reserved namespace `genesis.charter.version` (only `Stele::record_charter_version` writes it;
+`append` / `append_in` refuse it):
+
+`HCC-CHARTER-VERSION-v1\nfrom_version=…\nfrom_charter_byte_len=…\nfrom_charter_blake3_hex=…\nto_version=…\nto_charter_byte_len=…\nto_charter_blake3_hex=…\n`
+
+`royal_seal_sig` on the row is the operator's Ed25519 signature over the new charter digest, under the
+same public key as the genesis row. `Stele::lineage()` = genesis charter, then one epoch per row; each row
+must be canonical, continue from the previous tip, raise `MAJOR.MINOR.PATCH`, and verify. Boot accepts a
+vault only when the lineage tip is the booting charter, so a retired charter can no longer boot. BATON
+replay (`replay_lineage`) lets each trace match one lineage charter, never an older one than the trace
+before it. Operator step after re-sealing: `cargo run -p hcc-xtask -- charter-version
+charters/ZIGGURAT_v1.0.1.txt --to-version 1.0.1 --vault <eduba_vault.db>`, then boot the daemon with
+`--charter charters/ZIGGURAT_v1.0.1.txt`. `chare.provenance.tag` (67/30/3) stays TYPED.
 
 **`hcc_baton_trace_ledger`**  
 `trace_id`, `prev_digest`, `module_namespace`, `sequence_number`, `terrace_level` CHECK 1–5, `input_state_hash`, `output_state_hash`, `baton_envelope_sig` UNIQUE, `recorded_at_utc`
@@ -436,7 +453,7 @@ UI compile story: checked-in `origami/dist` **or** Leptos. No runtime npm.
 3. Length + `BLAKE3(stele_domain || bytes)` vs `baked.rs`  
 4. Ed25519 verify  
 5. Fail → `/status` `charter_sealed: false`; `/dispatch` forbidden  
-6. Open WAL; create tables; genesis stele if empty  
+6. Open WAL; create tables; genesis stele if empty; otherwise the charter lineage tip (§9.3) must be this charter  
 7. Bind `127.0.0.1:7749` only  
 8. Probe `:11434` (warn, do not exit)  
 9. Webview loads `origami/dist`; GET status; badge follows daemon  
