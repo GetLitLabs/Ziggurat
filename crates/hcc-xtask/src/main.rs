@@ -3,6 +3,7 @@
 //! keygen        [--out-dir keys]
 //! sign-charter  <charter> --key keys/operator.key [--out keys/charter.sig]
 //! seal-charter  <charter> [--pubkey keys/operator.pub --sig keys/charter.sig]
+//! freeze-vendor [--undo]          (vendor/ + local .cargo/config.toml, so cargo runs offline)
 //! gates         [--only 2,6,10]   (M11 audit, INDEX §14; exits non-zero unless every selected gate passes)
 //! seed          <blueprint.json>   (emit crates/<name>, add workspace member, cargo check; rolls back on failure)
 #![forbid(unsafe_code)]
@@ -99,6 +100,26 @@ fn run(args: &[String]) -> Result<(), XtaskError> {
             println!("{path}: UTF-8, LF only, no BOM, single final newline");
             Ok(())
         }
+        Some("freeze-vendor") => {
+            let root = workspace_root();
+            if args.iter().any(|a| a == "--undo") {
+                let removed = hcc_xtask::vendor::undo(&root).map_err(XtaskError::Vendor)?;
+                println!(
+                    "{}",
+                    if removed {
+                        "removed .cargo/config.toml; cargo uses the registry again (vendor/ left on disk)"
+                    } else {
+                        "no freeze-vendor config to remove"
+                    }
+                );
+                return Ok(());
+            }
+            let report = hcc_xtask::vendor::freeze(&root).map_err(XtaskError::Vendor)?;
+            println!("vendored             {} crates into vendor/ (Cargo.lock names {})", report.crates, report.lock_packages);
+            println!("wrote                .cargo/config.toml (crates-io -> vendor/)");
+            println!("next                 cargo test --workspace --offline");
+            Ok(())
+        }
         Some("gates") => {
             let selection: Vec<u8> = match flag(args, "--only")? {
                 None => hcc_xtask::gates::ALL.to_vec(),
@@ -137,7 +158,7 @@ fn run(args: &[String]) -> Result<(), XtaskError> {
             Ok(())
         }
         _ => Err(XtaskError::Usage(
-            "commands: keygen | sign-charter <charter> --key <file> | seal-charter <charter> [--pubkey <file> --sig <file>] | hygiene <charter> | seed <blueprint.json> | gates [--only N,N]".into(),
+            "commands: keygen | sign-charter <charter> --key <file> | seal-charter <charter> [--pubkey <file> --sig <file>] | hygiene <charter> | seed <blueprint.json> | gates [--only N,N] | freeze-vendor [--undo]".into(),
         )),
     }
 }

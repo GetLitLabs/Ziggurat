@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod gates;
+pub mod vendor;
 
 use std::fmt;
 use std::fs::OpenOptions;
@@ -24,6 +25,7 @@ pub enum XtaskError {
     Seal(SealError),
     Seed(hcc_seed::SeedError),
     GatesFailed(usize),
+    Vendor(String),
 }
 
 impl fmt::Display for XtaskError {
@@ -37,6 +39,7 @@ impl fmt::Display for XtaskError {
             Self::Seal(err) => write!(f, "seal: {err}"),
             Self::Seed(err) => write!(f, "seed: {err}"),
             Self::GatesFailed(n) => write!(f, "{n} gate(s) failed"),
+            Self::Vendor(msg) => write!(f, "freeze-vendor: {msg}"),
         }
     }
 }

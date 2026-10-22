@@ -6,3 +6,5 @@
 *.db-wal
 *.db-shm
 /src-tauri/gen/
+/vendor/
+/.cargo/config.toml

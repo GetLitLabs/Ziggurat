@@ -10,7 +10,7 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `charters/ZIGGURAT_v1.0.0.txt` | Frozen: 4660 bytes, LF only, no BOM |
 | `hcc-types` | `TerraceLevel` (1..=5), `BsmcNamespace` (must contain a dot) |
 | `hcc-seal` | `no_std`; domain-separated BLAKE3, Ed25519 verify, `SystemCharter<Unsealed>` / `<RoyalSealed>` |
-| `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene`, `seed <blueprint.json>`, `gates [--only N,N]` (M11 audit, INDEX §14) |
+| `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene`, `seed <blueprint.json>`, `gates [--only N,N]` (M11 audit, INDEX §14), `freeze-vendor [--undo]` |
 | `crates/hcc-seal/src/baked.rs` | Length + digest baked; **no royal seal yet**, so the charter stays Unsealed |
 | `hcc-iedb-stele` | Append-only hash-chained stele in SQLite WAL; abort triggers; genesis embeds the charter |
 | `hcc-krypt` | RMK → KEK (BLAKE3 `derive_key`, context `HCC-KRYPT-STRATUM-v2`) → DEK (ChaCha20-Poly1305 wrap) → FEK (wrapped under DEK; AES-256-GCM data); random nonces; zeroize on drop. Not wired into the daemon yet |
@@ -35,6 +35,18 @@ cargo run -p hcc-xtask -- gates --only 2,6,10
 ```
 
 Each line prints `GATE NN PASS|FAIL` with what was observed. The command exits non-zero unless every selected gate passes.
+
+## Offline builds (freeze-vendor)
+
+```sh
+cargo run -p hcc-xtask -- freeze-vendor        # one online run: copies all 464 crates in Cargo.lock into vendor/
+cargo test --workspace --offline               # from here on, no network is needed
+cargo run -p hcc-xtask -- freeze-vendor --undo # point cargo back at the registry
+```
+
+`vendor/` (about 650 MB, mostly Windows API crates for Tauri) and the `.cargo/config.toml` that points cargo at it
+stay on the machine and are gitignored. Cargo.lock's checksums pin every crate, and cargo re-checks them against
+`vendor/`. In the cloud, the full audit passed 11/11 from `vendor/` with an empty cargo home and no proxy.
 
 ## Desktop app (Tauri 2 + cockpit)
 
