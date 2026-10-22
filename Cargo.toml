@@ -7,6 +7,8 @@ members = [
     "crates/hcc-xtask",
     "crates/hcc-iedb-stele",
     "crates/hcc-krypt",
+    "crates/hcc-baton",
+    "crates/hcc-vanguard",
     "crates/hcc-daemon",
 ]
 
@@ -28,6 +30,8 @@ panic = "deny"
 hcc-types = { path = "crates/hcc-types" }
 hcc-seal = { path = "crates/hcc-seal" }
 hcc-iedb-stele = { path = "crates/hcc-iedb-stele" }
+hcc-baton = { path = "crates/hcc-baton" }
+hcc-vanguard = { path = "crates/hcc-vanguard" }
 blake3 = { version = "1.8", default-features = false }
 ed25519-dalek = { version = "2.1", default-features = false }
 getrandom = "0.2"

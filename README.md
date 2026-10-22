@@ -14,9 +14,11 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `crates/hcc-seal/src/baked.rs` | Length + digest baked; **no royal seal yet**, so the charter stays Unsealed |
 | `hcc-iedb-stele` | Append-only hash-chained stele in SQLite WAL; abort triggers; genesis embeds the charter |
 | `hcc-krypt` | RMK → KEK (BLAKE3 `derive_key`, context `HCC-KRYPT-STRATUM-v2`) → DEK (ChaCha20-Poly1305 wrap) → FEK (wrapped under DEK; AES-256-GCM data); random nonces; zeroize on drop. Not wired into the daemon yet |
+| `hcc-baton` | `hcc_baton_trace_ledger`: frozen envelope, hash-chained traces, record + replay, abort triggers |
+| `hcc-vanguard` | 35-entry job table with JSON handoff; `scribe.stele.append` live; seed/inspect `Err(Unwired)`; the rest `Err(Unimplemented)` |
 | `hcc-daemon` | Loopback-only `GET /v1/ziggurat/pillar/{module_id}/status` on 127.0.0.1:7749; opens the stele on a sealed boot |
 
-No dispatch, BATON, Vanguard, Tauri, or cockpit yet. Nothing here is operations-ready until
+No dispatch, Tauri, or cockpit yet. Krypt, BATON and Vanguard are not wired into the daemon. Nothing here is operations-ready until
 `cargo test --workspace` passes on the operator machine.
 
 ## Seal ceremony (operator machine)

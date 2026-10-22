@@ -403,6 +403,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hcc-baton"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "hcc-seal",
+ "hcc-types",
+ "rusqlite",
+]
+
+[[package]]
 name = "hcc-daemon"
 version = "1.0.0"
 dependencies = [
@@ -451,6 +461,19 @@ dependencies = [
 [[package]]
 name = "hcc-types"
 version = "1.0.0"
+
+[[package]]
+name = "hcc-vanguard"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek",
+ "hcc-iedb-stele",
+ "hcc-seal",
+ "hcc-types",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "hcc-xtask"

@@ -298,6 +298,15 @@ Typestate: `SystemCharter<Unsealed>` has no `verified_prompt()`.
 
 Handoff JSON: `{ "job", "bsmc_namespace", "terrace_level", "payload" }`.
 
+`hcc-vanguard::VANGUARD_TABLE` holds 35 named jobs: the three above plus every §4.1 marker. As a
+*dispatchable job* each §4.1 marker is TYPED (the underlying function may already be LIVE in its
+crate). In this build `scribe.stele.append` executes; `seed.scaffold.emit` and
+`inspect.gate.validate` return `Err(Unwired)` until `hcc-seed` and `scripts/nine_gates_audit.sh` exist.
+
+BATON envelope inputs: `prompt_hash = BLAKE3(prompt)`, `response_hash = BLAKE3(response)`,
+`terrace_u8` is one byte. Ledger `prev_digest` = previous row's envelope; replay recomputes each
+envelope under the sealed charter digest.
+
 ---
 
 ## 12. Ritual index (operator / LLM)

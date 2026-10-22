@@ -1,0 +1,16 @@
+[package]
+name = "hcc-baton"
+description = "T2 BATON (M10): hash-chained trace envelopes, record and replay."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+hcc-seal.workspace = true
+hcc-types.workspace = true
+blake3.workspace = true
+rusqlite.workspace = true
+
+[lints]
+workspace = true

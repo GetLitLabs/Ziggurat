@@ -75,6 +75,8 @@ impl fmt::Display for TypesError {
     }
 }
 
+impl core::error::Error for TypesError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
