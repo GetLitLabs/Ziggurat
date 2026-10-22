@@ -170,16 +170,14 @@ fn to_blob(vector: &[f32]) -> Vec<u8> {
 }
 
 fn from_blob(lesson_id: i64, blob: &[u8]) -> Result<Vec<f32>, NeuralError> {
-    let chunks = blob.chunks_exact(4);
-    if !chunks.remainder().is_empty() {
+    let (chunks, rest) = blob.as_chunks::<4>();
+    if !rest.is_empty() {
         return Err(NeuralError::Corrupt {
             lesson_id,
             column: "vector",
         });
     }
-    Ok(chunks
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect())
+    Ok(chunks.iter().map(|c| f32::from_le_bytes(*c)).collect())
 }
 
 /// Exact cosine similarity, accumulated in f64. `None` when lengths differ or a norm is zero.
