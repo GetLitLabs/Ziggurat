@@ -319,3 +319,55 @@ async fn vault_from_another_charter_reports_no_genesis() -> TestResult {
     }
     Ok(())
 }
+
+async fn with_origin(
+    method: &str,
+    origin: Option<&str>,
+) -> Result<axum::response::Response, Box<dyn std::error::Error>> {
+    let state = Arc::new(AccordionSwitchboardState {
+        charter: CharterStatus::from_bytes(SAMPLE.to_vec(), None),
+        stele_genesis: false,
+        ledgers: None,
+        runner_addr: dead_port().await?,
+    });
+    let mut request = Request::builder()
+        .method(method)
+        .uri("/v1/ziggurat/pillar/M09-RamGenie/status")
+        .extension(ConnectInfo(loopback_peer()));
+    if let Some(origin) = origin {
+        request = request.header("origin", origin);
+    }
+    Ok(router(state).oneshot(request.body(Body::empty())?).await?)
+}
+
+#[tokio::test]
+async fn cors_is_granted_only_to_the_cockpit_webview() -> TestResult {
+    for origin in hcc_daemon::COCKPIT_ORIGINS {
+        let response = with_origin("GET", Some(origin)).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("access-control-allow-origin"),
+            Some(&origin.parse()?),
+            "{origin}"
+        );
+        let preflight = with_origin("OPTIONS", Some(origin)).await?;
+        assert_eq!(preflight.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            preflight.headers().get("access-control-allow-headers"),
+            Some(&"content-type".parse()?)
+        );
+    }
+    for origin in [Some("http://evil.example"), Some("null"), None] {
+        let response = with_origin("GET", origin).await?;
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none(),
+            "{origin:?}"
+        );
+    }
+    let preflight = with_origin("OPTIONS", Some("http://evil.example")).await?;
+    assert_eq!(preflight.status(), StatusCode::FORBIDDEN);
+    Ok(())
+}

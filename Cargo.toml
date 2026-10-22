@@ -13,6 +13,7 @@ members = [
     "crates/hcc-wasi-healer",
     "crates/hcc-daemon",
     "crates/capsnap",
+    "src-tauri",
 ]
 
 [workspace.package]
@@ -35,6 +36,7 @@ hcc-seed = { path = "crates/hcc-seed" }
 hcc-krypt = { path = "crates/hcc-krypt" }
 hcc-wasi-healer = { path = "crates/hcc-wasi-healer" }
 hcc-xtask = { path = "crates/hcc-xtask" }
+hcc-daemon = { path = "crates/hcc-daemon" }
 hcc-seal = { path = "crates/hcc-seal" }
 hcc-iedb-stele = { path = "crates/hcc-iedb-stele" }
 hcc-baton = { path = "crates/hcc-baton" }

@@ -319,6 +319,12 @@ committed demo, and a test fails if those files drift from the blueprint.
 16 MiB; module ≤ 4 MiB; one instance; `declared_paths` empty, so no host imports are linked and any import is refused)
 and `healer.diagnose.heap` as `diagnose(wasm, &policy)`. Both are crate functions; as Vanguard jobs they remain TYPED.
 
+M12 build notes: `src-tauri/` is the `ziggurat-desktop` crate (Tauri 2). It calls `hcc_daemon::boot_and_serve` on
+Tauri's async runtime, so the app and `hcc-daemon` boot identically. `origami/dist` is hand-written HTML/CSS/JS
+checked in as-is (no `origami/src`, no npm). `capabilities/default.json` grants no permissions. Gate 5 also scans
+Cargo.lock: tauri lists `reqwest` only under `cfg(android | ios)`, which no desktop build compiles; any other path
+to a forbidden crate fails the gate.
+
 BATON envelope inputs: `prompt_hash = BLAKE3(prompt)`, `response_hash = BLAKE3(response)`,
 `terrace_u8` is one byte. Ledger `prev_digest` = previous row's envelope; replay recomputes each
 envelope under the sealed charter digest.

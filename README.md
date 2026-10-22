@@ -18,10 +18,12 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `hcc-vanguard` | 35-entry job table with JSON handoff; `scribe.stele.append`, `seed.scaffold.emit` and `inspect.gate.validate` live; the rest `Err(Unimplemented)` |
 | `hcc-seed` | M05 Code A Seed: validated blueprint JSON → `crates/<name>` (Cargo.toml, lib, schema tests, WAL); deterministic; adds the workspace member; `cargo check --offline`, rolled back on failure; never overwrites |
 | `hcc-wasi-healer` | M04: wasmi 2 (pure Rust interpreter) sandbox with a 10M fuel cap, 16 MiB memory cap, one instance and zero host imports (any import, WASI `path_open` included, is refused before instantiation). `diagnose` runs the start section and `_start`, then reports exported memories and fuel used. `fixtures/healer_empty.wasm` is the 8-byte empty module. Not wired into Vanguard or the daemon; `healer.patch.apply` stays TYPED |
+| `src-tauri` (`ziggurat-desktop`) | Tauri 2 shell: starts Accordion.be in-process, then shows the cockpit. CSP allows only `'self'` plus `127.0.0.1:7749` and `127.0.0.1:11434`; the window has no Tauri permissions |
+| `origami/dist` | M12 cockpit as plain checked-in HTML, CSS and JS (no npm, no build step): seal badge, T1–T5 rail, module chips, pillar telemetry, dispatch form, last BATON hex and output, 5 s poll, red errors |
 | `capsnap` | Demo crate written by `xtask seed blueprints/capsnap.json`; pinned to its blueprint by a drift test |
 | `hcc-daemon` | Loopback-only on 127.0.0.1:7749: `GET /v1/ziggurat/pillar/{module_id}/status` and `POST /v1/ramgenie/dispatch`; opens the stele and BATON ledger on a sealed boot |
 
-No Tauri or cockpit yet, so the audit reports 9/11 (gates 8 and 9 fail by design until they exist). Krypt and Vanguard are not wired into the daemon. Nothing here is operations-ready until
+Krypt and Vanguard are not wired into the daemon. Nothing here is operations-ready until
 `cargo test --workspace` passes on the operator machine.
 
 ## Nine gates (M11)
@@ -33,6 +35,22 @@ cargo run -p hcc-xtask -- gates --only 2,6,10
 ```
 
 Each line prints `GATE NN PASS|FAIL` with what was observed. The command exits non-zero unless every selected gate passes.
+
+## Desktop app (Tauri 2 + cockpit)
+
+Run from the repo root so the charter path resolves:
+
+```sh
+cargo run -p ziggurat-desktop                 # debug build, opens the cockpit window
+cargo build --release -p ziggurat-desktop     # target/release/ziggurat-desktop(.exe)
+```
+
+The app boots the same daemon as `hcc-daemon` (same charter check, same stele, same flags `--charter` and `--db`).
+If a standalone `hcc-daemon` already holds 127.0.0.1:7749, the app logs that and the cockpit talks to it.
+Windows needs the WebView2 runtime (built into Windows 10 and 11) and the MSVC build tools; Linux needs
+WebKitGTK 4.1 development packages. The cockpit reads only the daemon's replies: an unsealed charter shows a red
+UNSEALED badge with its `seal_error` and dispatch stays disabled, and a missing daemon shows DAEMON UNREACHABLE.
+The daemon sends CORS headers only to the Tauri webview origins (`tauri://localhost`, `http(s)://tauri.localhost`).
 
 ## Seal ceremony (operator machine)
 
@@ -76,7 +94,7 @@ ziggurat/
 │   ├── hcc-vanguard/               # T2 job table; 3 live, rest Err
 │   └── hcc-xtask/                  # T2 seal-charter, freeze-vendor, gates
 ├── src-tauri/                      # Faraday frame; hosts daemon task
-├── origami/{dist,src}/             # precompiled cockpit; no runtime npm
+├── origami/dist/                   # checked-in cockpit; no runtime npm
 ├── scripts/nine_gates_audit.sh
 ├── tests/ziggurat_integration.rs
 ├── fixtures/healer_empty.wasm

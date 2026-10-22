@@ -15,8 +15,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::extract::{ConnectInfo, Path as UrlPath, State};
-use axum::http::StatusCode;
+use axum::extract::{ConnectInfo, Path as UrlPath, Request, State};
+use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use hcc_baton::BatonLedger;
@@ -440,10 +442,51 @@ async fn ramgenie_dispatch(
     }))
 }
 
+/// Origins of the Tauri webview that hosts the origami cockpit (Linux/macOS, then Windows).
+/// Only these get CORS headers; every other origin is served without them, so a browser
+/// page elsewhere cannot read the daemon's replies.
+pub const COCKPIT_ORIGINS: [&str; 3] = [
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+];
+
+async fn cockpit_cors(request: Request, next: Next) -> Response {
+    let origin = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|o| o.to_str().ok())
+        .filter(|o| COCKPIT_ORIGINS.contains(o))
+        .map(str::to_owned);
+    let mut response = if request.method() == Method::OPTIONS {
+        match origin {
+            Some(_) => StatusCode::NO_CONTENT.into_response(),
+            None => StatusCode::FORBIDDEN.into_response(),
+        }
+    } else {
+        next.run(request).await
+    };
+    if let Some(value) = origin.and_then(|o| HeaderValue::from_str(&o).ok()) {
+        let headers = response.headers_mut();
+        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, POST"),
+        );
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("content-type"),
+        );
+        headers.insert(header::VARY, HeaderValue::from_static("origin"));
+    }
+    response
+}
+
 pub fn router(state: Arc<AccordionSwitchboardState>) -> Router {
     Router::new()
         .route("/v1/ziggurat/pillar/{module_id}/status", get(pillar_status))
         .route("/v1/ramgenie/dispatch", post(ramgenie_dispatch))
+        .layer(middleware::from_fn(cockpit_cors))
         .with_state(state)
 }
 
@@ -470,6 +513,41 @@ pub async fn bind_loopback(addr: SocketAddr) -> Result<TcpListener, DaemonError>
         return Err(DaemonError::NotLoopback(addr));
     }
     TcpListener::bind(addr).await.map_err(DaemonError::Io)
+}
+
+/// Full boot used by both `hcc-daemon` and the Tauri shell: verify the charter, open the
+/// stele, bind 127.0.0.1:7749 and serve. Every step is logged with `log`.
+pub async fn boot_and_serve(
+    charter_path: &Path,
+    db_path: &Path,
+    log: impl Fn(&str),
+) -> Result<(), DaemonError> {
+    let charter = CharterStatus::boot(charter_path, hcc_seal::BAKED_SEAL.as_ref());
+    log(&format!(
+        "charter {}: {}",
+        charter_path.display(),
+        charter.summary()
+    ));
+    if !charter.is_sealed() {
+        log("serving status only; inference stays refused");
+    }
+    let royal = hcc_seal::BAKED_SEAL.and_then(|baked| baked.royal);
+    let stele = SteleBoot::boot(db_path, &charter, royal.as_ref());
+    log(&format!("stele: {}", stele.note));
+    let listener = bind_loopback(ACCORDION_ADDR).await?;
+    if !probe_runner(RUNNER_ADDR).await {
+        log(&format!(
+            "warn: no model runner on {RUNNER_ADDR} (weather); continuing"
+        ));
+    }
+    log(&format!("listening on http://{ACCORDION_ADDR}"));
+    let state = Arc::new(AccordionSwitchboardState {
+        charter,
+        stele_genesis: stele.genesis,
+        ledgers: stele.ledgers.map(Mutex::new),
+        runner_addr: RUNNER_ADDR,
+    });
+    serve(listener, state).await
 }
 
 /// Serve until the process ends.

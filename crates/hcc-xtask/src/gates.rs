@@ -26,6 +26,28 @@ pub const FORBIDDEN_CRATES: [&str; 6] = [
     "rustls",
 ];
 
+/// Forbidden crates that may appear in Cargo.lock only through one mobile-only edge:
+/// tauri declares reqwest under `cfg(any(target_os = "android", ios))`. Any other dependent fails.
+pub const MOBILE_ONLY: [(&str, &str); 1] = [("reqwest", "tauri")];
+
+/// `(name, dependency names)` for every `[[package]]` in a Cargo.lock.
+pub fn lock_packages(lock: &str) -> Vec<(&str, Vec<&str>)> {
+    lock.split("[[package]]")
+        .filter_map(|block| {
+            let name = block
+                .lines()
+                .find_map(|l| l.strip_prefix("name = \""))?
+                .trim_end_matches('"');
+            let deps = block
+                .lines()
+                .filter_map(|l| l.strip_prefix(" \""))
+                .filter_map(|l| l.split(['"', ' ']).next())
+                .collect();
+            Some((name, deps))
+        })
+        .collect()
+}
+
 pub const LOOPBACK_HOSTS: [&str; 2] = ["127.0.0.1:7749", "127.0.0.1:11434"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,15 +274,50 @@ fn gate_tree(root: &Path) -> Result<String, String> {
         .copied()
         .filter(|p| FORBIDDEN_CRATES.iter().any(|f| p.starts_with(f)))
         .collect();
-    if hits.is_empty() {
-        Ok(format!(
-            "{} packages, none of {}",
-            packages.len(),
-            FORBIDDEN_CRATES.join("/")
-        ))
-    } else {
-        Err(format!("forbidden crates present: {}", hits.join(", ")))
+    if !hits.is_empty() {
+        return Err(format!(
+            "forbidden crates in cargo tree: {}",
+            hits.join(", ")
+        ));
     }
+    // Cargo.lock lists every package for every platform (Windows and macOS too), offline.
+    let lock =
+        fs::read_to_string(root.join("Cargo.lock")).map_err(|e| format!("Cargo.lock: {e}"))?;
+    let locked = lock_packages(&lock);
+    let mut mobile_only = Vec::new();
+    for (name, _) in locked
+        .iter()
+        .filter(|(p, _)| FORBIDDEN_CRATES.iter().any(|f| p.starts_with(f)))
+    {
+        let dependents: Vec<&str> = locked
+            .iter()
+            .filter(|(_, deps)| deps.contains(name))
+            .map(|(p, _)| *p)
+            .collect();
+        let gated = MOBILE_ONLY
+            .iter()
+            .any(|(dep, parent)| dep == name && dependents == [*parent]);
+        if !gated {
+            return Err(format!(
+                "forbidden crate {name} in Cargo.lock, pulled in by {}",
+                dependents.join(", ")
+            ));
+        }
+        mobile_only.push(*name);
+    }
+    let note = if mobile_only.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; Cargo.lock also lists {} only as tauri's Android/iOS dependency, which no desktop build compiles",
+            mobile_only.join(", ")
+        )
+    };
+    Ok(format!(
+        "{} packages in the host tree, none of {}{note}",
+        packages.len(),
+        FORBIDDEN_CRATES.join("/")
+    ))
 }
 
 struct Scratch(PathBuf);
@@ -521,6 +578,14 @@ mod tests {
             ["cdn.example.com"]
         );
         assert_eq!(non_loopback_urls("ws://localhost:1"), ["localhost:1"]);
+    }
+
+    #[test]
+    fn lock_scan_names_dependents() {
+        let lock = "[[package]]\nname = \"tauri\"\ndependencies = [\n \"reqwest\",\n \"serde 1.0.0\",\n]\n\n[[package]]\nname = \"reqwest\"\n";
+        let packages = lock_packages(lock);
+        assert_eq!(packages[0], ("tauri", vec!["reqwest", "serde"]));
+        assert_eq!(packages[1], ("reqwest", vec![]));
     }
 
     #[test]

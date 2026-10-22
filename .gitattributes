@@ -7,3 +7,5 @@ charters/** text eol=lf
 *.md text eol=lf
 *.sh text eol=lf
 *.wasm binary
+*.png binary
+*.ico binary

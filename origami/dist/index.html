@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ziggurat v1.0.0</title>
+  <link rel="stylesheet" href="cockpit.css">
+  <script src="cockpit.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="glyph" aria-hidden="true"></span>ZIGGURAT <span class="ver">v1.0.0</span></div>
+    <div class="links">
+      <span class="link"><span class="dot" id="dot-daemon"></span>Accordion <code>127.0.0.1:7749</code></span>
+      <span class="link"><span class="dot" id="dot-runner"></span>Runner <code>127.0.0.1:11434</code></span>
+      <span class="link"><span class="dot" id="dot-stele"></span>Stele genesis</span>
+    </div>
+    <div class="badge" id="seal-badge" data-state="unknown">NO STATUS YET</div>
+  </header>
+
+  <nav class="rail" aria-label="Terraces" id="rail"></nav>
+
+  <main class="center">
+    <section class="terrace-head">
+      <h1 id="terrace-title"></h1>
+      <p id="terrace-job"></p>
+    </section>
+    <section class="chips" id="chips" aria-label="Modules"></section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Pillar telemetry <code id="telemetry-module"></code></h2>
+        <span class="muted" id="poll-note">polling every 5 s</span>
+      </div>
+      <div class="error" id="status-error" hidden></div>
+      <dl class="telemetry" id="telemetry"></dl>
+    </section>
+  </main>
+
+  <aside class="right">
+    <form id="dispatch-form" class="panel" autocomplete="off">
+      <h2>RamGenie dispatch</h2>
+      <label>Model <input id="model" value="ziggurat:1.0.0" maxlength="128" required></label>
+      <label>Namespace <input id="namespace" value="genie.dispatch.local" maxlength="128" required></label>
+      <label>Terrace <select id="terrace"></select></label>
+      <label>Prompt <textarea id="prompt" rows="6" required></textarea></label>
+      <button type="submit" id="dispatch-btn">Dispatch</button>
+      <p class="muted" id="dispatch-note"></p>
+      <div class="error" id="dispatch-error" hidden></div>
+    </form>
+    <section class="panel">
+      <h2>Last BATON envelope</h2>
+      <code class="hex" id="baton-hex" data-empty="true">No dispatch yet</code>
+      <dl class="telemetry" id="dispatch-meta"></dl>
+    </section>
+    <section class="panel grow">
+      <h2>Last output</h2>
+      <pre class="output" id="output" data-empty="true">No dispatch yet</pre>
+    </section>
+  </aside>
+</body>
+</html>
