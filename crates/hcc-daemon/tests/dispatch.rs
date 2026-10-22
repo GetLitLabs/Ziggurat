@@ -152,6 +152,9 @@ async fn sealed_dispatch_records_baton_and_stele() -> TestResult {
         .contains(&format!("baton_envelope_hex={}\n", digest_hex(&expected))));
     let baton = hcc_baton::BatonLedger::open(&db)?;
     assert_eq!(baton.replay(&charter_digest(CHARTER))?, 1);
+    // Windows cannot delete a file SQLite still holds open (os error 32).
+    drop(stele);
+    drop(baton);
     if let Some(dir) = db.parent() {
         std::fs::remove_dir_all(dir)?;
     }

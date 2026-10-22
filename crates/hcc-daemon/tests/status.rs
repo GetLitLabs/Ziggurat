@@ -266,6 +266,7 @@ async fn sealed_boot_writes_genesis_and_reports_it() -> TestResult {
         let (_, body) = get_with(state, loopback_peer(), "M09-RamGenie").await?;
         assert_eq!(body["charter_sealed"], true);
         assert_eq!(body["stele_genesis"], true);
+        drop(stele);
     }
     let stele = hcc_iedb_stele::Stele::open(&db)?;
     assert_eq!(
@@ -276,6 +277,8 @@ async fn sealed_boot_writes_genesis_and_reports_it() -> TestResult {
     let row = stele.first()?.ok_or("no genesis row")?;
     let payload = String::from_utf8(row.payload)?;
     assert!(payload.contains(&digest_hex(&charter_digest(SAMPLE))));
+    // Windows cannot delete a file SQLite still holds open (os error 32).
+    drop(stele);
     if let Some(dir) = db.parent() {
         std::fs::remove_dir_all(dir)?;
     }
@@ -314,6 +317,7 @@ async fn vault_from_another_charter_reports_no_genesis() -> TestResult {
     let stele = SteleBoot::boot(&db, &charter, expected.royal.as_ref());
     assert!(!stele.genesis);
     assert!(stele.note.contains("different charter"), "{}", stele.note);
+    drop(stele);
     if let Some(dir) = db.parent() {
         std::fs::remove_dir_all(dir)?;
     }

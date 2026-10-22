@@ -216,6 +216,8 @@ fn shares_the_vault_file_with_the_stele_in_wal() -> TestResult {
         .query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
     assert_eq!(mode, "wal");
     assert_eq!(ledger.replay(&charter())?, 1);
+    // Windows cannot delete a file SQLite still holds open (os error 32).
+    drop(ledger);
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
