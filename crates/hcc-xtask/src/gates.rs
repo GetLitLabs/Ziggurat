@@ -6,7 +6,7 @@
 
 use std::fmt;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -147,7 +147,59 @@ fn cargo() -> Command {
 /// was built into: `cargo test --workspace` rebuilds hcc-xtask, and Windows refuses to overwrite
 /// a running executable (os error 5).
 pub fn gates_target_dir(root: &Path) -> PathBuf {
-    root.join("target").join("gates")
+    without_dot_dot(root).join("target").join("gates")
+}
+
+/// Drops `.` and folds `..` lexically, so paths handed to cargo carry no `..` (Windows keeps
+/// them verbatim in `current_exe` and error text). Unlike `canonicalize` it never yields a
+/// `\\?\` path and needs no file system access.
+pub fn without_dot_dot(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(part);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// The `failures:` names and panic lines from libtest stdout, so a red gate says which test.
+fn test_failures(stdout: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stdout);
+    let mut names = Vec::new();
+    let mut panics = Vec::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        if let Some(name) = line
+            .strip_prefix("test ")
+            .and_then(|rest| rest.strip_suffix(" ... FAILED"))
+        {
+            names.push(name.to_string());
+        } else if line.contains("panicked at") {
+            // libtest prints the panic message on the line after the location.
+            let message = lines.next().unwrap_or_default().trim();
+            panics.push(format!("{} {message}", line.trim()));
+        } else if line.starts_with("Error: ") {
+            panics.push(line.trim().to_string());
+        }
+    }
+    let mut detail = String::new();
+    if !names.is_empty() {
+        detail.push_str(&format!("failing: {}", names.join(", ")));
+    }
+    if !panics.is_empty() {
+        if !detail.is_empty() {
+            detail.push_str(" | ");
+        }
+        detail.push_str(&panics.join(" | "));
+    }
+    detail
 }
 
 fn last_lines(bytes: &[u8], n: usize) -> String {
@@ -169,12 +221,23 @@ fn cargo_gate(root: &Path, args: &[&str]) -> Result<String, String> {
         .output()
         .map_err(|e| format!("could not run cargo: {e}"))?;
     if !out.status.success() {
-        return Err(format!(
-            "`cargo {}` exited {}: {}",
-            args.join(" "),
-            out.status,
-            last_lines(&out.stderr, 4)
-        ));
+        let failures = test_failures(&out.stdout);
+        return Err(if failures.is_empty() {
+            format!(
+                "`cargo {}` exited {}: {}",
+                args.join(" "),
+                out.status,
+                last_lines(&out.stderr, 4)
+            )
+        } else {
+            format!(
+                "`cargo {}` exited {}: {} | {}",
+                args.join(" "),
+                out.status,
+                failures,
+                last_lines(&out.stderr, 2)
+            )
+        });
     }
     if args.first() == Some(&"test") {
         let (mut passed, mut failed) = (0u64, 0u64);
@@ -597,18 +660,30 @@ mod tests {
     }
 
     #[test]
-    fn cargo_gates_never_build_over_the_running_binary() -> Result<(), std::io::Error> {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    fn cargo_gates_build_in_their_own_target_dir() {
+        // Production invariant only. Where this test binary sits says nothing: under gate 4
+        // it is itself built in target/gates, which is the point of that directory.
+        let root = Path::new("ws")
+            .join("crates")
+            .join("hcc-xtask")
+            .join("..")
+            .join("..");
         let gates = gates_target_dir(&root);
-        let exe = std::env::current_exe()?;
+        assert_eq!(gates, Path::new("ws").join("target").join("gates"));
+        assert_ne!(gates, Path::new("ws").join("target"));
+        assert!(!gates.components().any(|c| c == Component::ParentDir));
+    }
+
+    #[test]
+    fn failing_test_names_reach_the_gate_message() {
+        let stdout = b"running 2 tests\ntest a::ok ... ok\ntest b::bad ... FAILED\n\nfailures:\n\n---- b::bad stdout ----\n\nthread 'b::bad' panicked at src/b.rs:3:5:\nboom\n\nfailures:\n    b::bad\n";
+        let detail = test_failures(stdout);
+        assert!(detail.contains("failing: b::bad"), "{detail}");
         assert!(
-            !exe.starts_with(&gates),
-            "{} is inside {}",
-            exe.display(),
-            gates.display()
+            detail.contains("panicked at src/b.rs:3:5: boom"),
+            "{detail}"
         );
-        assert!(gates.ends_with("target/gates"));
-        Ok(())
+        assert!(test_failures(b"test a ... ok\n").is_empty());
     }
 
     #[test]

@@ -27,7 +27,7 @@ fn main() -> ExitCode {
 }
 
 fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")
+    hcc_xtask::gates::without_dot_dot(&Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(".."))
 }
 
 fn flag<'a>(args: &'a [String], name: &str) -> Result<Option<&'a str>, XtaskError> {
