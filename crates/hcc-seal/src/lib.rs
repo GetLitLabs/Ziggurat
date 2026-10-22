@@ -218,22 +218,33 @@ pub enum SealError {
     NotUtf8,
 }
 
+impl SealError {
+    /// Every value `Display` can produce. Mirrored in `SPEC/ERRORS.md`.
+    pub const ALL: [SealError; 7] = [
+        SealError::NotBaked,
+        SealError::ByteLenMismatch {
+            expected: 0,
+            actual: 0,
+        },
+        SealError::DigestMismatch,
+        SealError::NoRoyalSeal,
+        SealError::BadPublicKey,
+        SealError::BadSignature,
+        SealError::NotUtf8,
+    ];
+}
+
+/// Fixed strings only: no lengths, paths, or key material. Details stay in `Debug`.
 impl fmt::Display for SealError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotBaked => f.write_str("no baked seal constants; run hcc-xtask seal-charter"),
-            Self::ByteLenMismatch { expected, actual } => {
-                write!(f, "charter is {actual} bytes, seal expects {expected}")
-            }
-            Self::DigestMismatch => {
-                f.write_str("charter BLAKE3 digest does not match the baked seal")
-            }
-            Self::NoRoyalSeal => f.write_str("no operator Ed25519 royal seal baked"),
-            Self::BadPublicKey => {
-                f.write_str("baked operator public key is not a valid Ed25519 point")
-            }
-            Self::BadSignature => f.write_str("operator Ed25519 signature does not verify"),
-            Self::NotUtf8 => f.write_str("charter bytes are not valid UTF-8"),
-        }
+        f.write_str(match self {
+            Self::NotBaked => "baked seal constants absent",
+            Self::ByteLenMismatch { .. } => "charter byte length does not match baked seal",
+            Self::DigestMismatch => "charter digest does not match baked seal",
+            Self::NoRoyalSeal => "no operator Ed25519 royal seal baked",
+            Self::BadPublicKey => "baked operator public key is invalid",
+            Self::BadSignature => "operator Ed25519 signature does not verify",
+            Self::NotUtf8 => "charter is not valid UTF-8",
+        })
     }
 }

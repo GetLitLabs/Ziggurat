@@ -74,7 +74,10 @@ async fn sealed_charter_reports_computed_digest() -> TestResult {
         body["charter_blake3_hex"],
         digest_hex(&charter_digest(SAMPLE))
     );
-    assert_eq!(body["seal_error"], Value::Null);
+    assert!(
+        body.get("seal_error").is_none(),
+        "seal_error must be omitted when sealed"
+    );
     assert_eq!(body["loopback_peer"], "127.0.0.1:40000");
     assert_eq!(body["ziggurat_version"], "1.0.0");
     assert_eq!(body["runner_up"], false);
@@ -112,7 +115,10 @@ async fn unsealed_charter_is_reported_unsealed() -> TestResult {
         body["charter_blake3_hex"],
         digest_hex(&charter_digest(b"tampered charter\n"))
     );
-    assert!(body["seal_error"].is_string());
+    assert_eq!(
+        body["seal_error"],
+        "charter byte length does not match baked seal"
+    );
     Ok(())
 }
 
@@ -130,7 +136,11 @@ async fn missing_charter_has_no_invented_digest() -> TestResult {
     assert_eq!(body["charter_sealed"], false);
     assert_eq!(body["charter_byte_len"], Value::Null);
     assert_eq!(body["charter_blake3_hex"], Value::Null);
-    assert!(body["seal_error"].is_string());
+    assert_eq!(body["seal_error"], "charter file unreadable");
+    assert!(
+        !body.to_string().contains("nonexistent"),
+        "no paths on the wire"
+    );
     Ok(())
 }
 
@@ -191,5 +201,27 @@ async fn serves_over_a_real_loopback_socket() -> TestResult {
     assert!(raw.starts_with("HTTP/1.1 200"));
     assert!(raw.contains(&digest_hex(&charter_digest(SAMPLE))));
     assert!(raw.contains("\"loopback_peer\":\"127.0.0.1:"));
+    Ok(())
+}
+
+#[test]
+fn unreadable_string_is_documented() -> Result<(), std::io::Error> {
+    let doc = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../SPEC/ERRORS.md"),
+    )?;
+    assert!(doc.contains(&format!("| `{}` |", hcc_daemon::CHARTER_UNREADABLE)));
+    Ok(())
+}
+
+#[test]
+fn index_lists_every_served_module_id() -> Result<(), std::io::Error> {
+    let index =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../INDEX.md"))?;
+    for id in hcc_daemon::MODULE_IDS {
+        assert!(
+            index.contains(&format!("| `{id}` |")),
+            "INDEX.md §4 is missing {id}"
+        );
+    }
     Ok(())
 }

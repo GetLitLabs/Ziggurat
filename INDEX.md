@@ -34,6 +34,8 @@ Use this file as the master lookup. If it is not in this index, it is not in v1.
 | G6 | `rust-toolchain.toml` | Pinned stable |
 | G7 | `.gitattributes` | LF on `*.rs`, `charters/*`, `*.Modelfile` |
 | G8 | `keys/` | Operator pubkey/sig. **Not in git** |
+| G9 | `SPEC/ERRORS.md` | Fixed `seal_error` / `status` strings served by `/status` |
+| G10 | `SPEC/DEVIATIONS.md` | Operator-accepted departures from the build order |
 
 **Seal law (LAW):** never invent BLAKE3, Ed25519, or byte length. `hcc-xtask seal-charter` writes `crates/hcc-seal/src/baked.rs`.
 
@@ -66,20 +68,20 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 
 ## 4. Twelve modules (BSM-C registry)
 
-| ID | Name | Namespace | Status | Crate(s) |
-|---|---|---|---|---|
-| M01 | Neural Highway | `neural.*` | TYPED | (later `hcc-neural`) |
-| M02 | Accordion.be | `accordion.*` | **LIVE** | `hcc-daemon` |
-| M03 | Krypt.DB / Eduba Vault | `krypt.*` `vault.*` | **LIVE** | `hcc-krypt` `hcc-iedb-stele` |
-| M04 | WASI Healer | `wasi.*` `healer.*` | **LIVE** (fixture) | `hcc-wasi-healer` |
-| M05 | Code A Seed | `seed.*` `ziggurat.*` | **LIVE** | `hcc-seed` |
-| M06 | Polymorphic Engine | `polymorph.*` | TYPED | xtask target-cpu only |
-| M07 | Genesis / Chare | `genesis.*` `chare.*` | TYPED | metadata on stele rows |
-| M08 | Zero-Trace | `zerotrace.*` `trace.*` | TYPED | crypto-shred only when built |
-| M09 | RamGenie | `genie.*` | **LIVE** | `hcc-daemon` |
-| M10 | BATON / Konjure / Curie-Monet | `baton.*` `konjure.*` `curie_monet.*` | **LIVE** (BATON) / TYPED (rest) | `hcc-baton` |
-| M11 | Lense / Inspect-A-File | `lense.*` `inspect.*` | **LIVE** | `scripts/nine_gates_audit.sh` |
-| M12 | Origami.fe / SUE / Tailor | `origami.*` `sue.*` `tailor.*` | **LIVE** (cockpit) | `origami/` `src-tauri/` |
+| ID | HTTP `module_id` | Name | Namespace | Status | Crate(s) |
+|---|---|---|---|---|---|
+| M01 | `M01-NeuralHighway` | Neural Highway | `neural.*` | TYPED | (later `hcc-neural`) |
+| M02 | `M02-Accordion` | Accordion.be | `accordion.*` | **LIVE** | `hcc-daemon` |
+| M03 | `M03-Krypt` | Krypt.DB / Eduba Vault | `krypt.*` `vault.*` | **LIVE** | `hcc-krypt` `hcc-iedb-stele` |
+| M04 | `M04-WasiHealer` | WASI Healer | `wasi.*` `healer.*` | **LIVE** (fixture) | `hcc-wasi-healer` |
+| M05 | `M05-CodeASeed` | Code A Seed | `seed.*` `ziggurat.*` | **LIVE** | `hcc-seed` |
+| M06 | `M06-Polymorph` | Polymorphic Engine | `polymorph.*` | TYPED | xtask target-cpu only |
+| M07 | `M07-Genesis` | Genesis / Chare | `genesis.*` `chare.*` | TYPED | metadata on stele rows |
+| M08 | `M08-ZeroTrace` | Zero-Trace | `zerotrace.*` `trace.*` | TYPED | crypto-shred only when built |
+| M09 | `M09-RamGenie` | RamGenie | `genie.*` | **LIVE** | `hcc-daemon` |
+| M10 | `M10-Baton` | BATON / Konjure / Curie-Monet | `baton.*` `konjure.*` `curie_monet.*` | **LIVE** (BATON) / TYPED (rest) | `hcc-baton` |
+| M11 | `M11-Lense` | Lense / Inspect-A-File | `lense.*` `inspect.*` | **LIVE** | `scripts/nine_gates_audit.sh` |
+| M12 | `M12-Origami` | Origami.fe / SUE / Tailor | `origami.*` `sue.*` `tailor.*` | **LIVE** (cockpit) | `origami/` `src-tauri/` |
 
 ### 4.1 Namespace verbs (v1.0.0)
 
@@ -121,6 +123,8 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `neural.index.upsert` | M01 | TYPED |
 
 Unknown namespace without a dot → HTTP 400. Known but TYPED → `Err(Unimplemented)`.
+
+The HTTP `module_id` column is the wire: `hcc_daemon::MODULE_IDS` serves exactly these twelve strings; any other id → HTTP 404.
 
 ---
 
@@ -214,7 +218,7 @@ ziggurat/
 
 ### 8.1 Status body
 
-`module_id`, `status`, `ziggurat_version`, `charter_sealed`, `charter_byte_len`, `charter_blake3_hex`, `loopback_peer`, `runner_up`
+`module_id`, `status`, `ziggurat_version`, `charter_sealed`, `charter_byte_len`, `charter_blake3_hex`, `seal_error` (omitted when sealed; values in `SPEC/ERRORS.md`), `stele_genesis`, `loopback_peer`, `runner_up`
 
 Hex/length **computed**. Never stub.
 
@@ -441,7 +445,7 @@ UI compile story: checked-in `origami/dist` **or** Leptos. No runtime npm.
 | 9 | healer fixture |
 | 10 | `nine_gates_audit.sh` on this machine |
 
-**Next mechanical action:** items 1–5. Do not add M01/M06/M08 engines until `curl http://127.0.0.1:7749/v1/ziggurat/pillar/M09-RamGenie/status` returns a digest that matches `b3sum` of the charter file.
+**Next mechanical action:** items 1–5. Do not add M01/M06/M08 engines until `curl http://127.0.0.1:7749/v1/ziggurat/pillar/M09-RamGenie/status` returns a `charter_blake3_hex` that matches the `charter_blake3_hex` printed by `hcc-xtask seal-charter` (the domain-separated digest, not plain `b3sum`), and stele row 1 embeds that hex.
 
 ---
 

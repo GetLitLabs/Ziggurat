@@ -24,6 +24,8 @@ pub const ACCORDION_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr
 /// Local model runner (weather). Loopback literal: no DNS.
 pub const RUNNER_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 11434));
 pub const DEFAULT_CHARTER_PATH: &str = "charters/ZIGGURAT_v1.0.0.txt";
+/// `seal_error` when the charter file cannot be read. The path and io error go to the boot log only.
+pub const CHARTER_UNREADABLE: &str = "charter file unreadable";
 
 /// The twelve pillars. Status is served only for these ids.
 pub const MODULE_IDS: [&str; 12] = [
@@ -111,6 +113,8 @@ pub struct PillarStatus {
     pub charter_sealed: bool,
     pub charter_byte_len: Option<usize>,
     pub charter_blake3_hex: Option<String>,
+    /// Omitted when sealed. Values are listed in `SPEC/ERRORS.md`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub seal_error: Option<String>,
     pub loopback_peer: String,
     pub runner_up: bool,
@@ -170,7 +174,9 @@ async fn pillar_status(
             Some(blake3_hex.clone()),
             Some(reason.to_string()),
         ),
-        CharterStatus::Unreadable { reason } => ("UNSEALED", None, None, Some(reason.clone())),
+        CharterStatus::Unreadable { .. } => {
+            ("UNSEALED", None, None, Some(CHARTER_UNREADABLE.to_string()))
+        }
     };
     Ok(Json(PillarStatus {
         module_id,
