@@ -138,6 +138,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "capsnap"
+version = "1.0.0"
+dependencies = [
+ "rusqlite",
+]
+
+[[package]]
 name = "cc"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -464,6 +471,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hcc-seed"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hcc-types"
 version = "1.0.0"
 
@@ -475,6 +491,7 @@ dependencies = [
  "ed25519-dalek",
  "hcc-iedb-stele",
  "hcc-seal",
+ "hcc-seed",
  "hcc-types",
  "serde",
  "serde_json",
@@ -488,6 +505,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom",
  "hcc-seal",
+ "hcc-seed",
  "hex",
  "zeroize",
 ]

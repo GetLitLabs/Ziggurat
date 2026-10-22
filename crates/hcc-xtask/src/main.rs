@@ -3,6 +3,7 @@
 //! keygen        [--out-dir keys]
 //! sign-charter  <charter> --key keys/operator.key [--out keys/charter.sig]
 //! seal-charter  <charter> [--pubkey keys/operator.pub --sig keys/charter.sig]
+//! seed          <blueprint.json>   (emit crates/<name>, add workspace member, cargo check; rolls back on failure)
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
@@ -97,8 +98,23 @@ fn run(args: &[String]) -> Result<(), XtaskError> {
             println!("{path}: UTF-8, LF only, no BOM, single final newline");
             Ok(())
         }
+        Some("seed") => {
+            let path = args
+                .get(1)
+                .filter(|a| !a.starts_with("--"))
+                .ok_or_else(|| XtaskError::Usage("missing blueprint path".into()))?;
+            let blueprint = hcc_seed::Blueprint::from_json(&std::fs::read_to_string(path)?)?;
+            let report = hcc_seed::seed(&blueprint, &workspace_root())?;
+            println!("blueprint            {path}");
+            println!("blueprint_blake3     {}", hex::encode(report.emit.blueprint_blake3));
+            for (file, hash) in &report.emit.files {
+                println!("wrote                {file}  blake3 {}", hex::encode(hash));
+            }
+            println!("member               {}  (cargo check --offline passed)", report.member);
+            Ok(())
+        }
         _ => Err(XtaskError::Usage(
-            "commands: keygen | sign-charter <charter> --key <file> | seal-charter <charter> [--pubkey <file> --sig <file>] | hygiene <charter>".into(),
+            "commands: keygen | sign-charter <charter> --key <file> | seal-charter <charter> [--pubkey <file> --sig <file>] | hygiene <charter> | seed <blueprint.json>".into(),
         )),
     }
 }

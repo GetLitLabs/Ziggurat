@@ -10,15 +10,17 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `charters/ZIGGURAT_v1.0.0.txt` | Frozen: 4660 bytes, LF only, no BOM |
 | `hcc-types` | `TerraceLevel` (1..=5), `BsmcNamespace` (must contain a dot) |
 | `hcc-seal` | `no_std`; domain-separated BLAKE3, Ed25519 verify, `SystemCharter<Unsealed>` / `<RoyalSealed>` |
-| `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene` |
+| `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene`, `seed <blueprint.json>` |
 | `crates/hcc-seal/src/baked.rs` | Length + digest baked; **no royal seal yet**, so the charter stays Unsealed |
 | `hcc-iedb-stele` | Append-only hash-chained stele in SQLite WAL; abort triggers; genesis embeds the charter |
 | `hcc-krypt` | RMK → KEK (BLAKE3 `derive_key`, context `HCC-KRYPT-STRATUM-v2`) → DEK (ChaCha20-Poly1305 wrap) → FEK (wrapped under DEK; AES-256-GCM data); random nonces; zeroize on drop. Not wired into the daemon yet |
 | `hcc-baton` | `hcc_baton_trace_ledger`: frozen envelope, hash-chained traces, record + replay, abort triggers |
-| `hcc-vanguard` | 35-entry job table with JSON handoff; `scribe.stele.append` live; seed/inspect `Err(Unwired)`; the rest `Err(Unimplemented)` |
+| `hcc-vanguard` | 35-entry job table with JSON handoff; `scribe.stele.append` and `seed.scaffold.emit` live; `inspect.gate.validate` `Err(Unwired)`; the rest `Err(Unimplemented)` |
+| `hcc-seed` | M05 Code A Seed: validated blueprint JSON → `crates/<name>` (Cargo.toml, lib, schema tests, WAL); deterministic; adds the workspace member; `cargo check --offline`, rolled back on failure; never overwrites |
+| `capsnap` | Demo crate written by `xtask seed blueprints/capsnap.json`; pinned to its blueprint by a drift test |
 | `hcc-daemon` | Loopback-only on 127.0.0.1:7749: `GET /v1/ziggurat/pillar/{module_id}/status` and `POST /v1/ramgenie/dispatch`; opens the stele and BATON ledger on a sealed boot |
 
-No Tauri, cockpit, `hcc-seed`, healer, or gates script yet. Krypt and Vanguard are not wired into the daemon. Nothing here is operations-ready until
+No Tauri, cockpit, healer, or gates script yet. Krypt and Vanguard are not wired into the daemon. Nothing here is operations-ready until
 `cargo test --workspace` passes on the operator machine.
 
 ## Seal ceremony (operator machine)

@@ -9,7 +9,9 @@ members = [
     "crates/hcc-krypt",
     "crates/hcc-baton",
     "crates/hcc-vanguard",
+    "crates/hcc-seed",
     "crates/hcc-daemon",
+    "crates/capsnap",
 ]
 
 [workspace.package]
@@ -28,6 +30,7 @@ panic = "deny"
 
 [workspace.dependencies]
 hcc-types = { path = "crates/hcc-types" }
+hcc-seed = { path = "crates/hcc-seed" }
 hcc-seal = { path = "crates/hcc-seal" }
 hcc-iedb-stele = { path = "crates/hcc-iedb-stele" }
 hcc-baton = { path = "crates/hcc-baton" }

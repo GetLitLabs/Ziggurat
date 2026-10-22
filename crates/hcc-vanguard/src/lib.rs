@@ -2,12 +2,13 @@
 //!
 //! Every job name comes from `INDEX.md` §4.1 or §11. Three are live in v1.0.0:
 //! `scribe.stele.append`, `seed.scaffold.emit`, `inspect.gate.validate`.
-//! In this build only `scribe.stele.append` executes; the other two return
-//! `Err(Unwired)` until `hcc-seed` and `scripts/nine_gates_audit.sh` exist.
+//! `scribe.stele.append` and `seed.scaffold.emit` execute; `inspect.gate.validate`
+//! returns `Err(Unwired)` until `scripts/nine_gates_audit.sh` exists.
 //! Every TYPED job returns `Err(Unimplemented)`. Nothing reports success it did not earn.
 #![forbid(unsafe_code)]
 
 use std::fmt;
+use std::path::Path;
 
 use hcc_iedb_stele::{Stele, SteleError};
 use hcc_seal::{digest_hex, RoyalSeal, RoyalSealed, SystemCharter};
@@ -111,6 +112,8 @@ pub struct VanguardContext<'a> {
     pub charter: &'a SystemCharter<RoyalSealed>,
     pub royal: &'a RoyalSeal,
     pub stele: &'a mut Stele,
+    /// Workspace that `seed.scaffold.emit` writes into. `None` refuses the job.
+    pub workspace_root: Option<&'a Path>,
 }
 
 #[derive(Debug)]
@@ -128,6 +131,8 @@ pub enum VanguardError {
         needs: &'static str,
     },
     Stele(SteleError),
+    NoWorkspace,
+    Seed(hcc_seed::SeedError),
 }
 
 impl fmt::Display for VanguardError {
@@ -144,6 +149,8 @@ impl fmt::Display for VanguardError {
                 "{job} is live in the spec but not wired yet: needs {needs}"
             ),
             Self::Stele(err) => write!(f, "stele: {err}"),
+            Self::NoWorkspace => f.write_str("seed.scaffold.emit needs a workspace root"),
+            Self::Seed(err) => write!(f, "seed: {err}"),
         }
     }
 }
@@ -162,10 +169,9 @@ pub fn dispatch(handoff: &Handoff, ctx: &mut VanguardContext<'_>) -> Result<Valu
         (JobStatus::Live, "scribe.stele.append") => {
             scribe_stele_append(&namespace, terrace, &handoff.payload, ctx)
         }
-        (JobStatus::Live, "seed.scaffold.emit") => Err(VanguardError::Unwired {
-            job: job.name,
-            needs: "hcc-seed",
-        }),
+        (JobStatus::Live, "seed.scaffold.emit") => {
+            seed_scaffold_emit(&namespace, terrace, &handoff.payload, ctx)
+        }
         (JobStatus::Live, name) => Err(VanguardError::Unwired {
             job: name,
             needs: "scripts/nine_gates_audit.sh",
@@ -202,6 +208,59 @@ fn scribe_stele_append(
         "charter_blake3_hex": ctx.charter.digest_hex(),
         "stele_id": row.stele_id,
         "prev_digest_hex": digest_hex(&row.prev_digest),
+        "blake3_hex": digest_hex(&row.blake3_digest),
+    }))
+}
+
+/// `seed.scaffold.emit`: payload `{ "blueprint": {...} }` (the `hcc-seed` blueprint).
+/// Emits `crates/<name>`, adds the workspace member, runs `cargo check --offline`
+/// (rolled back on failure), then records one stele row naming every file digest.
+fn seed_scaffold_emit(
+    namespace: &BsmcNamespace<'_>,
+    terrace: TerraceLevel,
+    payload: &Value,
+    ctx: &mut VanguardContext<'_>,
+) -> Result<Value, VanguardError> {
+    let root = ctx.workspace_root.ok_or(VanguardError::NoWorkspace)?;
+    let blueprint_json = payload.get("blueprint").ok_or(VanguardError::BadPayload(
+        "seed.scaffold.emit needs {\"blueprint\": object}",
+    ))?;
+    let blueprint =
+        hcc_seed::Blueprint::from_json(&blueprint_json.to_string()).map_err(VanguardError::Seed)?;
+    let report = hcc_seed::seed(&blueprint, root).map_err(VanguardError::Seed)?;
+    let mut record = format!(
+        "HCC-SEED-v1\nname={}\nblueprint_blake3_hex={}\n",
+        blueprint.name,
+        digest_hex(&report.emit.blueprint_blake3)
+    );
+    for (file, hash) in &report.emit.files {
+        record.push_str(&format!("file={file} {}\n", digest_hex(hash)));
+    }
+    let row = ctx
+        .stele
+        .append(
+            namespace.as_str(),
+            record.as_bytes(),
+            &ctx.royal.operator_pubkey,
+            None,
+        )
+        .map_err(VanguardError::Stele)?;
+    let files: Vec<Value> = report
+        .emit
+        .files
+        .iter()
+        .map(|(file, hash)| json!({ "path": file, "blake3_hex": digest_hex(hash) }))
+        .collect();
+    Ok(json!({
+        "job": "seed.scaffold.emit",
+        "bsmc_namespace": namespace.as_str(),
+        "terrace_level": terrace.as_u8(),
+        "charter_blake3_hex": ctx.charter.digest_hex(),
+        "member": report.member,
+        "blueprint_blake3_hex": digest_hex(&report.emit.blueprint_blake3),
+        "files": files,
+        "cargo_check": "passed",
+        "stele_id": row.stele_id,
         "blake3_hex": digest_hex(&row.blake3_digest),
     }))
 }

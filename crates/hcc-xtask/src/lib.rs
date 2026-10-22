@@ -20,6 +20,7 @@ pub enum XtaskError {
     BadHex(String),
     Rng(getrandom::Error),
     Seal(SealError),
+    Seed(hcc_seed::SeedError),
 }
 
 impl fmt::Display for XtaskError {
@@ -31,11 +32,18 @@ impl fmt::Display for XtaskError {
             Self::BadHex(msg) => write!(f, "bad hex key file: {msg}"),
             Self::Rng(err) => write!(f, "os entropy: {err}"),
             Self::Seal(err) => write!(f, "seal: {err}"),
+            Self::Seed(err) => write!(f, "seed: {err}"),
         }
     }
 }
 
 impl std::error::Error for XtaskError {}
+
+impl From<hcc_seed::SeedError> for XtaskError {
+    fn from(err: hcc_seed::SeedError) -> Self {
+        Self::Seed(err)
+    }
+}
 
 impl From<std::io::Error> for XtaskError {
     fn from(err: std::io::Error) -> Self {

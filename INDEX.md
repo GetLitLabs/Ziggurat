@@ -300,8 +300,16 @@ Handoff JSON: `{ "job", "bsmc_namespace", "terrace_level", "payload" }`.
 
 `hcc-vanguard::VANGUARD_TABLE` holds 35 named jobs: the three above plus every §4.1 marker. As a
 *dispatchable job* each §4.1 marker is TYPED (the underlying function may already be LIVE in its
-crate). In this build `scribe.stele.append` executes; `seed.scaffold.emit` and
-`inspect.gate.validate` return `Err(Unwired)` until `hcc-seed` and `scripts/nine_gates_audit.sh` exist.
+crate). In this build `scribe.stele.append` and `seed.scaffold.emit` execute; `inspect.gate.validate`
+returns `Err(Unwired)` until `scripts/nine_gates_audit.sh` exists.
+
+`seed.scaffold.emit` payload: `{ "blueprint": { "name", "summary", "tables": [{ "name", "columns": [{ "name", "type" }] }] } }`
+(`type` ∈ INTEGER | TEXT | BLOB | REAL; names from allow-lists, so nothing in a blueprint reaches Rust or SQL
+unescaped). It writes `crates/<name>/{Cargo.toml, src/lib.rs, tests/schema.rs, rustfmt.toml}`, adds the
+workspace member, runs `cargo check --offline -p <name>` (rolled back on failure, never overwrites), and appends
+one stele row `HCC-SEED-v1\nname=…\nblueprint_blake3_hex=…\nfile=<path> <blake3>\n…`. The operator path is
+`cargo run -p hcc-xtask -- seed blueprints/<name>.json`; `blueprints/capsnap.json` → `crates/capsnap` is the
+committed demo, and a test fails if those files drift from the blueprint.
 
 BATON envelope inputs: `prompt_hash = BLAKE3(prompt)`, `response_hash = BLAKE3(response)`,
 `terrace_u8` is one byte. Ledger `prev_digest` = previous row's envelope; replay recomputes each

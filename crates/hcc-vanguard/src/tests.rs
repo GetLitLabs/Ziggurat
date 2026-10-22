@@ -30,6 +30,13 @@ fn sealed() -> Result<(SystemCharter<RoyalSealed>, RoyalSeal), String> {
 }
 
 fn run(json: &str) -> Result<(Result<Value, VanguardError>, Stele), Box<dyn std::error::Error>> {
+    run_in(json, None)
+}
+
+fn run_in(
+    json: &str,
+    workspace_root: Option<&Path>,
+) -> Result<(Result<Value, VanguardError>, Stele), Box<dyn std::error::Error>> {
     let (charter, royal) = sealed()?;
     let mut stele = Stele::open_in_memory()?;
     stele.ensure_genesis(&charter, &royal)?;
@@ -40,6 +47,7 @@ fn run(json: &str) -> Result<(Result<Value, VanguardError>, Stele), Box<dyn std:
             charter: &charter,
             royal: &royal,
             stele: &mut stele,
+            workspace_root,
         },
     );
     Ok((outcome, stele))
@@ -100,17 +108,65 @@ fn scribe_appends_a_chained_stele_row() -> TestResult {
 }
 
 #[test]
-fn spec_live_but_unwired_jobs_return_err() -> TestResult {
-    for job in ["seed.scaffold.emit", "inspect.gate.validate"] {
-        let (outcome, stele) = run(&format!(
-            r#"{{"job":"{job}","bsmc_namespace":"{job}","terrace_level":3,"payload":{{}}}}"#
-        ))?;
-        assert!(
-            matches!(outcome, Err(VanguardError::Unwired { .. })),
-            "{job}"
-        );
-        assert_eq!(stele.len()?, 1, "{job} must not touch the stele");
+fn gate_validate_is_still_unwired() -> TestResult {
+    let (outcome, stele) = run(
+        r#"{"job":"inspect.gate.validate","bsmc_namespace":"inspect.gate.validate","terrace_level":3,"payload":{}}"#,
+    )?;
+    assert!(matches!(outcome, Err(VanguardError::Unwired { .. })));
+    assert_eq!(stele.len()?, 1, "must not touch the stele");
+    Ok(())
+}
+
+const SEED_HANDOFF: &str = r#"{"job":"seed.scaffold.emit","bsmc_namespace":"seed.scaffold.emit","terrace_level":3,"payload":{"blueprint":{"name":"seeded-probe","summary":"vanguard seed probe"}}}"#;
+
+/// A throwaway workspace with the same `[workspace.package]` keys the generator relies on.
+fn scratch_workspace(tag: &str) -> Result<std::path::PathBuf, std::io::Error> {
+    let root = std::env::temp_dir().join(format!("hcc-vanguard-{tag}-{}", std::process::id()));
+    if root.exists() {
+        std::fs::remove_dir_all(&root)?;
     }
+    std::fs::create_dir_all(root.join("crates"))?;
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nresolver = \"2\"\nmembers = [\n]\n\n[workspace.package]\nversion = \"1.0.0\"\nedition = \"2021\"\nlicense = \"LicenseRef-HCC-Sovereign-Perpetual\"\npublish = false\n\n[workspace.lints.rust]\nunsafe_code = \"forbid\"\n",
+    )?;
+    Ok(root)
+}
+
+#[test]
+fn seed_emits_checks_and_records_a_stele_row() -> TestResult {
+    let root = scratch_workspace("seed")?;
+    let (outcome, stele) = run_in(SEED_HANDOFF, Some(&root))?;
+    let out = outcome?;
+    assert_eq!(out["member"], "crates/seeded-probe");
+    assert_eq!(out["cargo_check"], "passed");
+    assert_eq!(out["stele_id"], 2);
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml"))?;
+    assert!(manifest.contains("\"crates/seeded-probe\","));
+    let row = stele.last()?.ok_or("no row")?;
+    let record = String::from_utf8(row.payload)?;
+    assert!(record.starts_with("HCC-SEED-v1\nname=seeded-probe\n"));
+    assert!(record.contains("file=crates/seeded-probe/src/lib.rs "));
+    assert_eq!(stele.verify_chain()?, 2);
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn seed_refuses_without_workspace_or_on_repeat() -> TestResult {
+    let (outcome, stele) = run(SEED_HANDOFF)?;
+    assert!(matches!(outcome, Err(VanguardError::NoWorkspace)));
+    assert_eq!(stele.len()?, 1);
+
+    let root = scratch_workspace("repeat")?;
+    run_in(SEED_HANDOFF, Some(&root))?.0?;
+    let (again, stele) = run_in(SEED_HANDOFF, Some(&root))?;
+    assert!(matches!(
+        again,
+        Err(VanguardError::Seed(hcc_seed::SeedError::AlreadyExists(_)))
+    ));
+    assert_eq!(stele.len()?, 1, "a refused seed writes no row");
+    std::fs::remove_dir_all(&root)?;
     Ok(())
 }
 

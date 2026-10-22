@@ -1,6 +1,6 @@
 [package]
 name = "hcc-xtask"
-description = "T2 operator tooling: keygen, sign-charter, seal-charter (writes hcc-seal/src/baked.rs)."
+description = "T2 operator tooling: keygen, sign-charter, seal-charter (writes hcc-seal/src/baked.rs), seed."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 hcc-seal.workspace = true
+hcc-seed.workspace = true
 blake3.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
 getrandom.workspace = true
