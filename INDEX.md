@@ -70,7 +70,7 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 
 | ID | HTTP `module_id` | Name | Namespace | Status | Crate(s) |
 |---|---|---|---|---|---|
-| M01 | `M01-NeuralHighway` | Neural Highway | `neural.*` | TYPED | (later `hcc-neural`) |
+| M01 | `M01-NeuralHighway` | Neural Highway | `neural.*` | **LIVE** (crate) | `hcc-neural` |
 | M02 | `M02-Accordion` | Accordion.be | `accordion.*` | **LIVE** | `hcc-daemon` |
 | M03 | `M03-Krypt` | Krypt.DB / Eduba Vault | `krypt.*` `vault.*` | **LIVE** | `hcc-krypt` `hcc-iedb-stele` |
 | M04 | `M04-WasiHealer` | WASI Healer | `wasi.*` `healer.*` | **LIVE** (fixture) | `hcc-wasi-healer` |
@@ -95,7 +95,7 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `krypt.fe_key.encrypt` | M03 | LIVE — FEK wrapped under DEK |
 | `krypt.stele.verify` | M03 | LIVE via `hcc-seal` |
 | `vault.ast.parse` | M03 | TYPED |
-| `vault.store.lesson` | M03 | TYPED |
+| `vault.store.lesson` | M03 | LIVE — `hcc-neural::LessonStore::store` |
 | `healer.diagnose.heap` | M04 | LIVE — fixture wasm |
 | `healer.patch.apply` | M04 | TYPED |
 | `wasi.sandbox.lock` | M04 | LIVE |
@@ -119,8 +119,8 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `origami.fold.assemble` | M12 | LIVE |
 | `sue.cockpit.mount` | M12 | LIVE |
 | `tailor.burst.balance` | M12 | TYPED |
-| `neural.retrieve.lesson` | M01 | TYPED |
-| `neural.index.upsert` | M01 | TYPED |
+| `neural.retrieve.lesson` | M01 | LIVE — `hcc_neural::retrieve` |
+| `neural.index.upsert` | M01 | LIVE — `upsert_vector`, `index_pending` |
 
 Unknown namespace without a dot → HTTP 400. Known but TYPED → `Err(Unimplemented)`.
 
@@ -141,6 +141,7 @@ The HTTP `module_id` column is the wire: `hcc_daemon::MODULE_IDS` serves exactly
 | `hcc-seed` | T2 | T3 | Write real crate files + tests |
 | `hcc-wasi-healer` | T2 | T2/T4 | Fuel sandbox, empty wasm fixture |
 | `hcc-vanguard` | T2 | T3 | Job table; 3 live jobs |
+| `hcc-neural` | T2 | T3 | Lesson store, loopback embeddings, exact cosine retrieve |
 | `hcc-xtask` | T2 | T4 | `seal-charter`, `freeze-vendor`, `gates` |
 | `ziggurat-desktop` | host | T5 | Tauri 2 shell; spawns daemon |
 
@@ -174,6 +175,7 @@ ziggurat/
 ├── crates/hcc-seed/
 ├── crates/hcc-wasi-healer/
 ├── crates/hcc-vanguard/
+├── crates/hcc-neural/
 ├── crates/hcc-xtask/
 ├── src-tauri/
 │   ├── Cargo.toml
@@ -256,6 +258,13 @@ Genesis `prev_digest` = 32×`0x00`.
 
 **`hcc_baton_trace_ledger`**  
 `trace_id`, `prev_digest`, `module_namespace`, `sequence_number`, `terrace_level` CHECK 1–5, `input_state_hash`, `output_state_hash`, `baton_envelope_sig` UNIQUE, `recorded_at_utc`
+
+**`hcc_neural_lesson`** (M01/M03, same vault file)  
+`lesson_id`, `module_namespace`, `title`, `body`, `body_blake3` UNIQUE, `stele_id`, `stored_at_utc`. Append-only triggers.
+Storing a lesson appends stele row `vault.store.lesson`: `HCC-LESSON-v1\nlesson_id=…\nbsmc_namespace=…\ntitle_blake3_hex=…\nbody_blake3_hex=…\n` (hashes only) in the same transaction.
+
+**`hcc_neural_index`**  
+`(lesson_id, model)` PK, `dim` 1..=16384, `vector` (dim × f32 LE), `body_blake3` (bytes the vector was made from), `indexed_at_utc`. Upsert, not a ledger.
 
 **`hcc_ramgenie_dispatch_log`**  
 Optional denormalized view of dispatches; still chained; still append-only.
@@ -380,6 +389,14 @@ cargo tauri build --bundles app
 ```
 
 Optional weather: local Ollama/Candle already listening on `127.0.0.1:11434`. Absence must not crash the daemon.
+
+M01 embeddings: `POST 127.0.0.1:11434/api/embed {"model","input":[..]}` → `{"embeddings":[[..]]}` via hyper on a loopback
+literal (`hcc_neural::embed` refuses any non-loopback address). `index_pending` embeds lessons with no vector for that
+model; `retrieve` embeds the query and returns the exact top-k (k ≤ 64) by cosine, brute force, ties by lower
+`lesson_id`. Runner down → `EmbedError::Unreachable`, a non-2xx reply → `Status(code, runner text)`, wrong vector
+count → `EmbedCount`; nothing is written on any of them. No ANN index and no latency claims. As Vanguard jobs the three
+markers stay TYPED and the daemon has no lesson route yet. Lesson bodies are stored as plaintext in the vault file;
+sealing them under a Krypt FEK is not built.
 
 ---
 

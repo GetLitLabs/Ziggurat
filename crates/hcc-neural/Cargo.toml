@@ -1,0 +1,25 @@
+[package]
+name = "hcc-neural"
+description = "T2 Neural Highway (M01): lesson store in the vault, local embeddings over loopback, brute-force cosine retrieve."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+hcc-types.workspace = true
+hcc-seal.workspace = true
+hcc-iedb-stele.workspace = true
+blake3.workspace = true
+rusqlite.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util"] }
+
+[lints]
+workspace = true
