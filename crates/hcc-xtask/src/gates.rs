@@ -143,6 +143,13 @@ fn cargo() -> Command {
     cmd
 }
 
+/// Build directory for the cargo gates. It must not be the directory the running `hcc-xtask`
+/// was built into: `cargo test --workspace` rebuilds hcc-xtask, and Windows refuses to overwrite
+/// a running executable (os error 5).
+pub fn gates_target_dir(root: &Path) -> PathBuf {
+    root.join("target").join("gates")
+}
+
 fn last_lines(bytes: &[u8], n: usize) -> String {
     let text = String::from_utf8_lossy(bytes);
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -157,6 +164,7 @@ fn cargo_gate(root: &Path, args: &[&str]) -> Result<String, String> {
     full.extend_from_slice(args);
     let out = cargo()
         .args(&full)
+        .env("CARGO_TARGET_DIR", gates_target_dir(root))
         .current_dir(root)
         .output()
         .map_err(|e| format!("could not run cargo: {e}"))?;
@@ -586,6 +594,21 @@ mod tests {
         let packages = lock_packages(lock);
         assert_eq!(packages[0], ("tauri", vec!["reqwest", "serde"]));
         assert_eq!(packages[1], ("reqwest", vec![]));
+    }
+
+    #[test]
+    fn cargo_gates_never_build_over_the_running_binary() -> Result<(), std::io::Error> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let gates = gates_target_dir(&root);
+        let exe = std::env::current_exe()?;
+        assert!(
+            !exe.starts_with(&gates),
+            "{} is inside {}",
+            exe.display(),
+            gates.display()
+        );
+        assert!(gates.ends_with("target/gates"));
+        Ok(())
     }
 
     #[test]
