@@ -83,7 +83,7 @@ pub fn name(gate: u8) -> &'static str {
         8 => "Tauri CSP names both loopback hosts",
         9 => "origami/dist exists with no non-loopback URLs",
         10 => "stele/BATON prev_digest chain + immutable triggers",
-        11 => "krypt round-trip + healer empty wasm under fuel",
+        11 => "krypt round-trip + zero-trace shred + healer empty wasm under fuel",
         _ => "unknown gate",
     }
 }
@@ -626,13 +626,67 @@ fn gate_krypt_healer(root: &Path) -> Result<String, String> {
     if decrypt_file(&fek, b"other aad", &blob).is_ok() {
         return Err("krypt decrypted under the wrong AAD".into());
     }
+    let shred = gate_zerotrace()?;
     let wasm = fs::read(root.join(hcc_wasi_healer::EMPTY_FIXTURE_PATH))
         .map_err(|e| format!("{}: {e}", hcc_wasi_healer::EMPTY_FIXTURE_PATH))?;
     let policy = hcc_wasi_healer::SandboxPolicy::LOCKED;
     let report = hcc_wasi_healer::diagnose(&wasm, &policy).map_err(|e| format!("healer: {e}"))?;
     Ok(format!(
-        "RMK→KEK→DEK→FEK round trip ok, wrong AAD refused; {}-byte fixture ran under fuel cap {} (used {})",
+        "RMK→KEK→DEK→FEK round trip ok, wrong AAD refused; {shred}; {}-byte fixture ran under fuel cap {} (used {})",
         report.wasm_byte_len, report.fuel_cap, report.fuel_consumed
+    ))
+}
+
+/// M08 on a scratch vault: shred a persisted key, then prove it cannot be opened, the
+/// certificate is chained on the stele, and the envelope bytes are gone from the file.
+fn gate_zerotrace() -> Result<String, String> {
+    use hcc_iedb_stele::{genesis_payload, Stele, GENESIS_NAMESPACE};
+    use hcc_krypt::RootMasterKey;
+    use hcc_zerotrace::{Keyring, ZeroTraceError};
+    let scratch = Scratch::new("zerotrace")?;
+    let vault = scratch.0.join("eduba_vault.db");
+    let pubkey = *blake3::hash(b"gate 11 scratch pubkey").as_bytes();
+    let charter = *blake3::hash(b"gate 11 scratch charter").as_bytes();
+    let rmk = RootMasterKey::generate().map_err(|e| e.to_string())?;
+    let (secret, cert) = {
+        let mut stele = Stele::open(&vault).map_err(|e| e.to_string())?;
+        stele
+            .append(
+                GENESIS_NAMESPACE,
+                &genesis_payload(1, &charter),
+                &pubkey,
+                None,
+            )
+            .map_err(|e| e.to_string())?;
+        let mut keyring = Keyring::open(&vault).map_err(|e| e.to_string())?;
+        let key_id = keyring.create(&rmk, "gate11").map_err(|e| e.to_string())?;
+        keyring.open_key(&rmk, &key_id).map_err(|e| e.to_string())?;
+        let secret = keyring
+            .envelope(&key_id)
+            .map_err(|e| e.to_string())?
+            .wrapped_dek
+            .ciphertext;
+        let cert = keyring
+            .destroy(&key_id, &pubkey)
+            .map_err(|e| e.to_string())?;
+        if !matches!(
+            keyring.open_key(&rmk, &key_id),
+            Err(ZeroTraceError::Destroyed { .. })
+        ) {
+            return Err("zero-trace: a shredded key still opened".into());
+        }
+        if stele.verify_chain().map_err(|e| e.to_string())? != 2 {
+            return Err("zero-trace: certificate did not chain onto the stele".into());
+        }
+        (secret, cert)
+    };
+    let bytes = fs::read(&vault).map_err(|e| format!("vault: {e}"))?;
+    if bytes.windows(secret.len()).any(|w| w == secret.as_slice()) {
+        return Err("zero-trace: wrapped DEK bytes still in the vault file".into());
+    }
+    Ok(format!(
+        "key shredded, certificate is stele row {}, wrapped DEK absent from the vault file",
+        cert.stele_id
     ))
 }
 
