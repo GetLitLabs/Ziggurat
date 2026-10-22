@@ -36,17 +36,24 @@ cargo run -p hcc-xtask -- gates --only 2,6,10
 
 Each line prints `GATE NN PASS|FAIL` with what was observed. The command exits non-zero unless every selected gate passes.
 
-## Offline builds (freeze-vendor)
+## Offline builds (vendor/ is committed)
+
+`vendor/` holds every crate in Cargo.lock (464 crates, about 650 MB, mostly Windows API crates for Tauri) and
+`.cargo/config.toml` points cargo at it, so a fresh clone builds, tests and runs the gates with networking off:
 
 ```sh
-cargo run -p hcc-xtask -- freeze-vendor        # one online run: copies all 464 crates in Cargo.lock into vendor/
-cargo test --workspace --offline               # from here on, no network is needed
-cargo run -p hcc-xtask -- freeze-vendor --undo # point cargo back at the registry
+cargo test --workspace --offline
 ```
 
-`vendor/` (about 650 MB, mostly Windows API crates for Tauri) and the `.cargo/config.toml` that points cargo at it
-stay on the machine and are gitignored. Cargo.lock's checksums pin every crate, and cargo re-checks them against
-`vendor/`. In the cloud, the full audit passed 11/11 from `vendor/` with an empty cargo home and no proxy.
+Cargo re-checks every vendored file against its checksum, and `.gitattributes` keeps git from converting their
+line endings. After changing any dependency, refresh and commit both (the refresh needs the network once):
+
+```sh
+cargo run -p hcc-xtask -- freeze-vendor
+git add vendor .cargo/config.toml Cargo.lock
+```
+
+`freeze-vendor --undo` points cargo back at the registry.
 
 ## Desktop app (Tauri 2 + cockpit)
 

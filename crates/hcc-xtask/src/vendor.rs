@@ -1,8 +1,10 @@
 //! `freeze-vendor`: copy every dependency named in Cargo.lock into `vendor/` and point this
 //! checkout's cargo at it, so builds, tests and the gates run with networking off.
 //!
-//! Both `vendor/` and `.cargo/config.toml` are local to the machine (gitignored): Cargo.lock's
-//! checksums already pin every crate's bytes, and cargo re-checks them against `vendor/`.
+//! Both `vendor/` and `.cargo/config.toml` are committed (operator decision, 2026-10-22), so a fresh
+//! clone builds with networking off. Cargo.lock's checksums pin every crate's bytes and cargo
+//! re-checks them against `vendor/`; `.gitattributes` stops git from converting vendored files.
+//! Re-run after any dependency change and commit the result.
 
 use std::fs;
 use std::path::Path;
@@ -13,8 +15,8 @@ pub const CONFIG_PATH: &str = ".cargo/config.toml";
 
 /// The source replacement written to `.cargo/config.toml`.
 pub const CONFIG: &str = "\
-# Written by `cargo run -p hcc-xtask -- freeze-vendor`. Local to this machine (gitignored).
-# Remove with `cargo run -p hcc-xtask -- freeze-vendor --undo`.
+# Written by `cargo run -p hcc-xtask -- freeze-vendor`; committed with vendor/ so clones build offline.
+# After changing dependencies, re-run freeze-vendor and commit vendor/ and this file.
 [source.crates-io]
 replace-with = \"vendored-sources\"
 
@@ -71,11 +73,20 @@ pub fn freeze(root: &Path) -> Result<VendorReport, String> {
     })
 }
 
+/// The config with comments and blank lines dropped: a config counts as freeze-vendor's when its
+/// settings match, whatever its comment header says (older versions wrote other comments).
+fn settings(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
+}
+
 /// Remove the source replacement (leaves `vendor/` on disk). Refuses to touch a config it did not write.
 pub fn undo(root: &Path) -> Result<bool, String> {
     let config = root.join(CONFIG_PATH);
     match fs::read_to_string(&config) {
-        Ok(text) if text == CONFIG => {
+        Ok(text) if settings(&text) == settings(CONFIG) => {
             fs::remove_file(&config).map_err(|e| format!("{CONFIG_PATH}: {e}"))?;
             Ok(true)
         }
@@ -102,6 +113,9 @@ mod tests {
         assert!(config.exists());
         fs::write(&config, CONFIG).map_err(|e| e.to_string())?;
         assert_eq!(undo(&root), Ok(true));
+        let older = CONFIG.replace("committed with vendor/", "local only");
+        fs::write(&config, older).map_err(|e| e.to_string())?;
+        assert_eq!(undo(&root), Ok(true), "an older header is still ours");
         assert!(!config.exists());
         fs::remove_dir_all(&root).map_err(|e| e.to_string())
     }

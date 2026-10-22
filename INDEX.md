@@ -326,8 +326,9 @@ Cargo.lock: tauri lists `reqwest` only under `cfg(android | ios)`, which no desk
 to a forbidden crate fails the gate.
 
 `xtask freeze-vendor` runs `cargo vendor --locked --versioned-dirs vendor`, checks that every registry package in
-Cargo.lock is present, and writes a local `.cargo/config.toml` replacing crates-io with `vendor/`. Both paths are
-gitignored (about 650 MB); `--undo` removes only a config it wrote. Dispatch commits the BATON trace and its
+Cargo.lock is present, and writes `.cargo/config.toml` replacing crates-io with `vendor/`. Both are committed
+(operator decision 2026-10-22, about 650 MB) so clones build offline; `.gitattributes` marks `vendor/**` `-text`
+so checksummed bytes are never converted. `--undo` removes only a config it wrote. Dispatch commits the BATON trace and its
 `genie.dispatch.local` stele row in one transaction (`BatonLedger::record_then` + `hcc_iedb_stele::append_in`).
 
 BATON envelope inputs: `prompt_hash = BLAKE3(prompt)`, `response_hash = BLAKE3(response)`,
