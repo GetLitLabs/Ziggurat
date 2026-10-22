@@ -12,8 +12,9 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `hcc-seal` | `no_std`; domain-separated BLAKE3, Ed25519 verify, `SystemCharter<Unsealed>` / `<RoyalSealed>` |
 | `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene` |
 | `crates/hcc-seal/src/baked.rs` | Length + digest baked; **no royal seal yet**, so the charter stays Unsealed |
+| `hcc-daemon` | Loopback-only `GET /v1/ziggurat/pillar/{module_id}/status` on 127.0.0.1:7749 |
 
-No daemon, stele, Tauri, or cockpit yet. Nothing here is operations-ready until
+No dispatch, stele, Tauri, or cockpit yet. Nothing here is operations-ready until
 `cargo test --workspace` passes on the operator machine.
 
 ## Seal ceremony (operator machine)
@@ -66,7 +67,17 @@ ziggurat/
 └── vendor/                         # cargo vendor for offline
 ```
 
-## Plumb line (next)
+## Run the daemon
 
-`hcc-daemon` GET `/v1/ziggurat/pillar/{module_id}/status` on 127.0.0.1:7749, after the
-operator confirms the step 4 gate. Its `charter_blake3_hex` must equal `seal-charter`'s.
+```bash
+cargo run -p hcc-daemon            # from the workspace root; --charter <path> to override
+curl -s http://127.0.0.1:7749/v1/ziggurat/pillar/M09-RamGenie/status
+```
+
+The daemon boots whether or not the seal holds. `charter_blake3_hex` is computed from the
+file at boot and must equal `seal-charter`'s `charter_blake3_hex`. `charter_sealed` is `true`
+and `status` is `ROYAL_SEAL_LOCKED` only after the operator's royal seal is baked; otherwise
+`status` is `UNSEALED` and `seal_error` says why. A missing model runner on 127.0.0.1:11434
+is a warning and `runner_up: false`, never a crash. Module ids: `M01-NeuralHighway`,
+`M02-Accordion`, `M03-Krypt`, `M04-WasiHealer`, `M05-CodeASeed`, `M06-Polymorph`,
+`M07-Genesis`, `M08-ZeroTrace`, `M09-RamGenie`, `M10-Baton`, `M11-Lense`, `M12-Origami`.
