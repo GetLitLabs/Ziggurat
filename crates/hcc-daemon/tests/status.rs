@@ -8,7 +8,7 @@ use axum::body::{to_bytes, Body};
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use ed25519_dalek::{Signer, SigningKey};
-use hcc_daemon::{bind_loopback, router, AccordionSwitchboardState, CharterStatus};
+use hcc_daemon::{bind_loopback, router, AccordionSwitchboardState, CharterStatus, SteleBoot};
 use hcc_seal::{charter_digest, digest_hex, RoyalSeal, SealConstants, BAKED_SEAL};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -48,10 +48,20 @@ async fn get(
     peer: SocketAddr,
     module_id: &str,
 ) -> Result<(StatusCode, Value), Box<dyn std::error::Error>> {
-    let state = Arc::new(AccordionSwitchboardState {
+    let state = AccordionSwitchboardState {
         charter,
+        stele_genesis: false,
         runner_addr,
-    });
+    };
+    get_with(state, peer, module_id).await
+}
+
+async fn get_with(
+    state: AccordionSwitchboardState,
+    peer: SocketAddr,
+    module_id: &str,
+) -> Result<(StatusCode, Value), Box<dyn std::error::Error>> {
+    let state = Arc::new(state);
     let request = Request::get(format!("/v1/ziggurat/pillar/{module_id}/status"))
         .extension(ConnectInfo(peer))
         .body(Body::empty())?;
@@ -189,6 +199,7 @@ async fn serves_over_a_real_loopback_socket() -> TestResult {
     let addr = listener.local_addr()?;
     let state = Arc::new(AccordionSwitchboardState {
         charter: CharterStatus::from_bytes(SAMPLE.to_vec(), None),
+        stele_genesis: false,
         runner_addr: dead_port().await?,
     });
     tokio::spawn(hcc_daemon::serve(listener, state));
@@ -222,6 +233,85 @@ fn index_lists_every_served_module_id() -> Result<(), std::io::Error> {
             index.contains(&format!("| `{id}` |")),
             "INDEX.md §4 is missing {id}"
         );
+    }
+    Ok(())
+}
+
+fn scratch_db(name: &str) -> Result<std::path::PathBuf, std::io::Error> {
+    let dir = std::env::temp_dir().join(format!("hcc-daemon-{name}-{}", std::process::id()));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)?;
+    }
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join("eduba_vault.db"))
+}
+
+#[tokio::test]
+async fn sealed_boot_writes_genesis_and_reports_it() -> TestResult {
+    let db = scratch_db("sealed")?;
+    let expected = sealed_constants(SAMPLE);
+    let royal = expected.royal;
+    for _boot in 0..2 {
+        let charter = CharterStatus::from_bytes(SAMPLE.to_vec(), Some(&expected));
+        let stele = SteleBoot::boot(&db, &charter, royal.as_ref());
+        assert!(stele.genesis, "{}", stele.note);
+        let state = AccordionSwitchboardState {
+            charter,
+            stele_genesis: stele.genesis,
+            runner_addr: dead_port().await?,
+        };
+        let (_, body) = get_with(state, loopback_peer(), "M09-RamGenie").await?;
+        assert_eq!(body["charter_sealed"], true);
+        assert_eq!(body["stele_genesis"], true);
+    }
+    let stele = hcc_iedb_stele::Stele::open(&db)?;
+    assert_eq!(
+        stele.len()?,
+        1,
+        "second boot must not append a second genesis"
+    );
+    let row = stele.first()?.ok_or("no genesis row")?;
+    let payload = String::from_utf8(row.payload)?;
+    assert!(payload.contains(&digest_hex(&charter_digest(SAMPLE))));
+    if let Some(dir) = db.parent() {
+        std::fs::remove_dir_all(dir)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unsealed_boot_never_opens_the_stele() -> TestResult {
+    let db = scratch_db("unsealed")?;
+    let charter = CharterStatus::from_bytes(SAMPLE.to_vec(), None);
+    let stele = SteleBoot::boot(&db, &charter, None);
+    assert!(!stele.genesis);
+    assert!(!db.exists(), "unsealed boot must not create the vault");
+    let state = AccordionSwitchboardState {
+        charter,
+        stele_genesis: stele.genesis,
+        runner_addr: dead_port().await?,
+    };
+    let (_, body) = get_with(state, loopback_peer(), "M09-RamGenie").await?;
+    assert_eq!(body["stele_genesis"], false);
+    if let Some(dir) = db.parent() {
+        std::fs::remove_dir_all(dir)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn vault_from_another_charter_reports_no_genesis() -> TestResult {
+    let db = scratch_db("other")?;
+    let first = sealed_constants(b"first charter\n");
+    let first_charter = CharterStatus::from_bytes(b"first charter\n".to_vec(), Some(&first));
+    assert!(SteleBoot::boot(&db, &first_charter, first.royal.as_ref()).genesis);
+    let expected = sealed_constants(SAMPLE);
+    let charter = CharterStatus::from_bytes(SAMPLE.to_vec(), Some(&expected));
+    let stele = SteleBoot::boot(&db, &charter, expected.royal.as_ref());
+    assert!(!stele.genesis);
+    assert!(stele.note.contains("different charter"), "{}", stele.note);
+    if let Some(dir) = db.parent() {
+        std::fs::remove_dir_all(dir)?;
     }
     Ok(())
 }

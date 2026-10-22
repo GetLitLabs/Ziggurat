@@ -5,6 +5,7 @@ members = [
     "crates/hcc-types",
     "crates/hcc-seal",
     "crates/hcc-xtask",
+    "crates/hcc-iedb-stele",
     "crates/hcc-daemon",
 ]
 
@@ -25,6 +26,7 @@ panic = "deny"
 [workspace.dependencies]
 hcc-types = { path = "crates/hcc-types" }
 hcc-seal = { path = "crates/hcc-seal" }
+hcc-iedb-stele = { path = "crates/hcc-iedb-stele" }
 blake3 = { version = "1.8", default-features = false }
 ed25519-dalek = { version = "2.1", default-features = false }
 getrandom = "0.2"
@@ -34,3 +36,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tower = { version = "0.5", features = ["util"] }
+rusqlite = { version = "0.40", features = ["bundled"] }

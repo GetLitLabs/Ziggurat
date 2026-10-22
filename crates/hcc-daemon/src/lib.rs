@@ -1,8 +1,10 @@
 //! Accordion.be (M02) and Lense pillar status (M11 `lense.pillar.status`).
 //!
-//! Boot reads the charter, checks it against the xtask-baked seal, and binds
-//! 127.0.0.1:7749 whether or not the seal holds. A charter that fails the seal
-//! is served honestly as unsealed; nothing here can forge a sealed state.
+//! Boot reads the charter and checks it against the xtask-baked seal. Only a
+//! royal-sealed charter opens the Eduba stele (WAL) and appends or confirms
+//! genesis. The daemon then binds 127.0.0.1:7749 whether or not the seal holds:
+//! a charter that fails is served honestly as unsealed, and nothing here can
+//! forge a sealed state or a genesis row.
 #![forbid(unsafe_code)]
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -14,7 +16,8 @@ use axum::extract::{ConnectInfo, Path as UrlPath, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use hcc_seal::{digest_hex, RoyalSealed, SealConstants, SealError, SystemCharter};
+use hcc_iedb_stele::{Genesis, Stele};
+use hcc_seal::{digest_hex, RoyalSeal, RoyalSealed, SealConstants, SealError, SystemCharter};
 use serde::Serialize;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -24,6 +27,7 @@ pub const ACCORDION_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr
 /// Local model runner (weather). Loopback literal: no DNS.
 pub const RUNNER_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 11434));
 pub const DEFAULT_CHARTER_PATH: &str = "charters/ZIGGURAT_v1.0.0.txt";
+pub const DEFAULT_DB_PATH: &str = "eduba_vault.db";
 /// `seal_error` when the charter file cannot be read. The path and io error go to the boot log only.
 pub const CHARTER_UNREADABLE: &str = "charter file unreadable";
 
@@ -99,9 +103,56 @@ impl CharterStatus {
     }
 }
 
+/// Outcome of opening the stele at boot.
+pub struct SteleBoot {
+    /// Row 1 exists, starts from 32 zero bytes, embeds this charter, and the chain verifies.
+    pub genesis: bool,
+    /// One line for the boot log.
+    pub note: String,
+}
+
+impl SteleBoot {
+    /// Boot step after the seal: open WAL, append genesis if missing, verify the chain.
+    /// An unsealed charter never opens the stele.
+    pub fn boot(db_path: &Path, charter: &CharterStatus, royal: Option<&RoyalSeal>) -> Self {
+        let (CharterStatus::Sealed(sealed), Some(royal)) = (charter, royal) else {
+            return Self {
+                genesis: false,
+                note: "charter not royal-sealed; stele not opened".to_string(),
+            };
+        };
+        let outcome = Stele::open(db_path).and_then(|mut stele| {
+            let genesis = stele.ensure_genesis(sealed, royal)?;
+            let rows = stele.verify_chain()?;
+            Ok((genesis, rows))
+        });
+        match outcome {
+            Ok((genesis, rows)) => {
+                let verb = match genesis {
+                    Genesis::Created(_) => "appended",
+                    Genesis::Present(_) => "found",
+                };
+                Self {
+                    genesis: true,
+                    note: format!(
+                        "genesis {verb} in {}; chain verified, {rows} row(s); genesis blake3 {}",
+                        db_path.display(),
+                        digest_hex(&genesis.row().blake3_digest)
+                    ),
+                }
+            }
+            Err(err) => Self {
+                genesis: false,
+                note: format!("{}: {err}", db_path.display()),
+            },
+        }
+    }
+}
+
 /// Shared daemon state (`AccordionSwitchboardState`).
 pub struct AccordionSwitchboardState {
     pub charter: CharterStatus,
+    pub stele_genesis: bool,
     pub runner_addr: SocketAddr,
 }
 
@@ -116,6 +167,7 @@ pub struct PillarStatus {
     /// Omitted when sealed. Values are listed in `SPEC/ERRORS.md`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seal_error: Option<String>,
+    pub stele_genesis: bool,
     pub loopback_peer: String,
     pub runner_up: bool,
 }
@@ -186,6 +238,7 @@ async fn pillar_status(
         charter_byte_len: byte_len,
         charter_blake3_hex: blake3_hex,
         seal_error,
+        stele_genesis: state.stele_genesis,
         loopback_peer: peer.to_string(),
         runner_up: probe_runner(state.runner_addr).await,
     }))

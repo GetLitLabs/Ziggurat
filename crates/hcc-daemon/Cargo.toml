@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 hcc-seal.workspace = true
+hcc-iedb-stele.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true
