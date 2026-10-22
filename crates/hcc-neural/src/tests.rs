@@ -398,3 +398,33 @@ fn embeddings_parser_refuses_anything_but_numbers() {
 fn default_runner_is_the_loopback_literal() {
     assert_eq!(RUNNER_ADDR.to_string(), "127.0.0.1:11434");
 }
+
+/// Operator check against the real local runner. Skipped by default; run with
+/// `HCC_NEURAL_LIVE_MODEL=nomic-embed-text cargo test -p hcc-neural -- --ignored live_runner --nocapture`.
+#[tokio::test]
+#[ignore = "needs a local runner on 127.0.0.1:11434 and HCC_NEURAL_LIVE_MODEL"]
+async fn live_runner_round_trip() -> TestResult {
+    let model = std::env::var("HCC_NEURAL_LIVE_MODEL")?;
+    let scratch = Scratch::new("live")?;
+    let mut store = LessonStore::open(&scratch.vault())?;
+    seed(&mut store)?;
+    let wait = Duration::from_secs(300);
+    let indexed = index_pending(&mut store, RUNNER_ADDR, &model, wait).await?;
+    assert_eq!(indexed, 3);
+    let hits = retrieve(
+        &store,
+        RUNNER_ADDR,
+        &model,
+        "how much fuel may a wasm module burn",
+        3,
+        wait,
+    )
+    .await?;
+    for hit in &hits {
+        println!("{:.4}  {}", hit.score, hit.lesson.title);
+    }
+    assert_eq!(hits.len(), 3);
+    assert_eq!(hits[0].lesson.title, "Fuel caps");
+    drop(store);
+    Ok(())
+}
