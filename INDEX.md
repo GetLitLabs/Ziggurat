@@ -277,6 +277,8 @@ Optional denormalized view of dispatches; still chained; still append-only.
 | III | DEK | ChaCha20-Poly1305 wrap | Under KEK |
 | IV | FEK | AES-256-GCM | **Wrapped under DEK**; random 12-byte nonces in prod |
 
+`hcc-krypt` reading of IV: the FEK is wrapped under the DEK with ChaCha20-Poly1305 (the DEK's cipher); the FEK seals file bytes with AES-256-GCM. Wrapped keys carry their stratum name as AEAD associated data.
+
 Wipe (M08 when live) = crypto-shred keys + deletion certificate on stele. No SSD Gutmann claims.
 
 Typestate: `SystemCharter<Unsealed>` has no `verified_prompt()`.
