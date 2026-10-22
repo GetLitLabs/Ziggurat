@@ -7,18 +7,23 @@
 //! forge a sealed state or a genesis row.
 #![forbid(unsafe_code)]
 
+pub mod ramgenie;
+
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::body::Bytes;
 use axum::extract::{ConnectInfo, Path as UrlPath, State};
 use axum::http::StatusCode;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
+use hcc_baton::BatonLedger;
 use hcc_iedb_stele::{Genesis, Stele};
 use hcc_seal::{digest_hex, RoyalSeal, RoyalSealed, SealConstants, SealError, SystemCharter};
-use serde::Serialize;
+use hcc_types::{BsmcNamespace, TerraceLevel};
+use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
 
 pub const ZIGGURAT_VERSION: &str = "1.0.0";
@@ -103,47 +108,81 @@ impl CharterStatus {
     }
 }
 
-/// Outcome of opening the stele at boot.
+/// The open Eduba vault: stele and BATON ledger in one WAL file.
+pub struct Ledgers {
+    pub stele: Stele,
+    pub baton: BatonLedger,
+    /// Operator pubkey recorded on every stele row this daemon writes.
+    pub operator_pubkey: [u8; 32],
+}
+
+/// Outcome of opening the vault at boot.
 pub struct SteleBoot {
     /// Row 1 exists, starts from 32 zero bytes, embeds this charter, and the chain verifies.
     pub genesis: bool,
+    /// Present only when genesis holds and both chains verify.
+    pub ledgers: Option<Ledgers>,
     /// One line for the boot log.
     pub note: String,
 }
 
 impl SteleBoot {
-    /// Boot step after the seal: open WAL, append genesis if missing, verify the chain.
-    /// An unsealed charter never opens the stele.
+    /// Boot step after the seal: open WAL, append genesis if missing, verify the stele
+    /// chain, open the BATON ledger and replay it. An unsealed charter never opens the vault.
     pub fn boot(db_path: &Path, charter: &CharterStatus, royal: Option<&RoyalSeal>) -> Self {
         let (CharterStatus::Sealed(sealed), Some(royal)) = (charter, royal) else {
             return Self {
                 genesis: false,
+                ledgers: None,
                 note: "charter not royal-sealed; stele not opened".to_string(),
             };
         };
-        let outcome = Stele::open(db_path).and_then(|mut stele| {
-            let genesis = stele.ensure_genesis(sealed, royal)?;
-            let rows = stele.verify_chain()?;
-            Ok((genesis, rows))
-        });
-        match outcome {
-            Ok((genesis, rows)) => {
-                let verb = match genesis {
-                    Genesis::Created(_) => "appended",
-                    Genesis::Present(_) => "found",
-                };
-                Self {
-                    genesis: true,
-                    note: format!(
-                        "genesis {verb} in {}; chain verified, {rows} row(s); genesis blake3 {}",
-                        db_path.display(),
-                        digest_hex(&genesis.row().blake3_digest)
-                    ),
+        let opened = Stele::open(db_path)
+            .map_err(|e| e.to_string())
+            .and_then(|mut stele| {
+                let genesis = stele
+                    .ensure_genesis(sealed, royal)
+                    .map_err(|e| e.to_string())?;
+                let rows = stele.verify_chain().map_err(|e| e.to_string())?;
+                Ok((stele, genesis, rows))
+            });
+        let (stele, genesis, rows) = match opened {
+            Ok(opened) => opened,
+            Err(err) => {
+                return Self {
+                    genesis: false,
+                    ledgers: None,
+                    note: format!("{}: {err}", db_path.display()),
                 }
             }
+        };
+        let verb = match genesis {
+            Genesis::Created(_) => "appended",
+            Genesis::Present(_) => "found",
+        };
+        let stele_note = format!(
+            "genesis {verb} in {}; chain verified, {rows} row(s); genesis blake3 {}",
+            db_path.display(),
+            digest_hex(&genesis.row().blake3_digest)
+        );
+        let baton = BatonLedger::open(db_path).and_then(|baton| {
+            let traces = baton.replay(sealed.digest())?;
+            Ok((baton, traces))
+        });
+        match baton {
+            Ok((baton, traces)) => Self {
+                genesis: true,
+                ledgers: Some(Ledgers {
+                    stele,
+                    baton,
+                    operator_pubkey: royal.operator_pubkey,
+                }),
+                note: format!("{stele_note}; BATON replayed {traces} trace(s)"),
+            },
             Err(err) => Self {
-                genesis: false,
-                note: format!("{}: {err}", db_path.display()),
+                genesis: true,
+                ledgers: None,
+                note: format!("{stele_note}; BATON ledger refused: {err}; dispatch held"),
             },
         }
     }
@@ -153,6 +192,8 @@ impl SteleBoot {
 pub struct AccordionSwitchboardState {
     pub charter: CharterStatus,
     pub stele_genesis: bool,
+    /// `None` unless the charter is royal-sealed and both chains verified at boot.
+    pub ledgers: Option<Mutex<Ledgers>>,
     pub runner_addr: SocketAddr,
 }
 
@@ -244,9 +285,165 @@ async fn pillar_status(
     }))
 }
 
+/// Dispatch refusals. Fixed strings, listed in `SPEC/ERRORS.md`.
+pub mod dispatch_error {
+    pub const NON_LOOPBACK: &str = "non-loopback peer refused";
+    pub const BAD_JSON: &str =
+        "dispatch body must be JSON {model, bsmc_namespace, terrace_level, operator_prompt}";
+    pub const BAD_TERRACE: &str = "terrace_level must be 1..=5";
+    pub const BAD_NAMESPACE: &str = "bsmc_namespace must be dot-separated";
+    pub const BAD_MODEL: &str = "model must be 1-128 chars of [A-Za-z0-9._:/-]";
+    pub const EMPTY_PROMPT: &str = "operator_prompt must not be empty";
+    pub const UNSEALED: &str = "charter not royal-sealed; dispatch forbidden";
+    pub const NO_LEDGER: &str = "stele or BATON ledger not open; dispatch held";
+    pub const LEDGER_LOCK: &str = "ledger lock poisoned";
+    pub const LEDGER_WRITE: &str = "ledger append failed";
+
+    pub const ALL: [&str; 10] = [
+        NON_LOOPBACK,
+        BAD_JSON,
+        BAD_TERRACE,
+        BAD_NAMESPACE,
+        BAD_MODEL,
+        EMPTY_PROMPT,
+        UNSEALED,
+        NO_LEDGER,
+        LEDGER_LOCK,
+        LEDGER_WRITE,
+    ];
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DispatchRequest {
+    pub model: String,
+    pub bsmc_namespace: String,
+    pub terrace_level: i64,
+    pub operator_prompt: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DispatchSealed {
+    pub status: &'static str,
+    pub bsmc_namespace: String,
+    pub terrace_level: u8,
+    pub charter_blake3_hex: String,
+    pub baton_envelope_blake3_hex: String,
+    pub baton_trace_id: i64,
+    pub stele_dispatch_row_id: i64,
+    pub model_output: String,
+}
+
+fn model_ok(model: &str) -> bool {
+    (1..=128).contains(&model.len())
+        && model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-'))
+}
+
+/// Canonical stele payload for one sealed dispatch.
+pub fn dispatch_payload(
+    model: &str,
+    namespace: &str,
+    terrace: TerraceLevel,
+    trace_id: i64,
+    envelope_hex: &str,
+) -> Vec<u8> {
+    format!(
+        "HCC-DISPATCH-v1\nmodel={model}\nbsmc_namespace={namespace}\nterrace_level={}\nbaton_trace_id={trace_id}\nbaton_envelope_hex={envelope_hex}\n",
+        terrace.as_u8()
+    )
+    .into_bytes()
+}
+
+/// `genie.dispatch.local`
+async fn ramgenie_dispatch(
+    State(state): State<Arc<AccordionSwitchboardState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    body: Bytes,
+) -> Reply<DispatchSealed> {
+    use dispatch_error as e;
+    if !peer.ip().is_loopback() {
+        return Err(refuse(StatusCode::FORBIDDEN, e::NON_LOOPBACK.into()));
+    }
+    let request: DispatchRequest = serde_json::from_slice(&body)
+        .map_err(|_| refuse(StatusCode::BAD_REQUEST, e::BAD_JSON.into()))?;
+    let terrace = u8::try_from(request.terrace_level)
+        .ok()
+        .and_then(|level| TerraceLevel::try_from(level).ok())
+        .ok_or_else(|| refuse(StatusCode::BAD_REQUEST, e::BAD_TERRACE.into()))?;
+    let namespace = BsmcNamespace::parse(&request.bsmc_namespace)
+        .map_err(|_| refuse(StatusCode::BAD_REQUEST, e::BAD_NAMESPACE.into()))?;
+    if !model_ok(&request.model) {
+        return Err(refuse(StatusCode::BAD_REQUEST, e::BAD_MODEL.into()));
+    }
+    if request.operator_prompt.is_empty() {
+        return Err(refuse(StatusCode::BAD_REQUEST, e::EMPTY_PROMPT.into()));
+    }
+    let CharterStatus::Sealed(charter) = &state.charter else {
+        return Err(refuse(StatusCode::FORBIDDEN, e::UNSEALED.into()));
+    };
+    let Some(ledgers) = &state.ledgers else {
+        return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, e::NO_LEDGER.into()));
+    };
+
+    let output = ramgenie::generate(
+        state.runner_addr,
+        &request.model,
+        charter.verified_prompt(),
+        &request.operator_prompt,
+        ramgenie::RUNNER_TIMEOUT,
+    )
+    .await
+    .map_err(|err| refuse(StatusCode::BAD_GATEWAY, err.wire().into()))?;
+
+    let mut ledgers = ledgers
+        .lock()
+        .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_LOCK.into()))?;
+    let write_failed = |detail: String| {
+        eprintln!("hcc-daemon: {}: {detail}", e::LEDGER_WRITE);
+        refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_WRITE.into())
+    };
+    let trace = ledgers
+        .baton
+        .record(
+            charter.digest(),
+            namespace.as_str(),
+            terrace,
+            request.operator_prompt.as_bytes(),
+            output.as_bytes(),
+        )
+        .map_err(|err| write_failed(err.to_string()))?;
+    let envelope_hex = digest_hex(&trace.envelope);
+    let payload = dispatch_payload(
+        &request.model,
+        namespace.as_str(),
+        terrace,
+        trace.trace_id,
+        &envelope_hex,
+    );
+    let pubkey = ledgers.operator_pubkey;
+    let row = ledgers
+        .stele
+        .append("genie.dispatch.local", &payload, &pubkey, None)
+        .map_err(|err| write_failed(err.to_string()))?;
+
+    Ok(Json(DispatchSealed {
+        status: "DISPATCH_SEALED",
+        bsmc_namespace: request.bsmc_namespace,
+        terrace_level: terrace.as_u8(),
+        charter_blake3_hex: charter.digest_hex(),
+        baton_envelope_blake3_hex: envelope_hex,
+        baton_trace_id: trace.trace_id,
+        stele_dispatch_row_id: row.stele_id,
+        model_output: output,
+    }))
+}
+
 pub fn router(state: Arc<AccordionSwitchboardState>) -> Router {
     Router::new()
         .route("/v1/ziggurat/pillar/{module_id}/status", get(pillar_status))
+        .route("/v1/ramgenie/dispatch", post(ramgenie_dispatch))
         .with_state(state)
 }
 

@@ -51,6 +51,7 @@ async fn get(
     let state = AccordionSwitchboardState {
         charter,
         stele_genesis: false,
+        ledgers: None,
         runner_addr,
     };
     get_with(state, peer, module_id).await
@@ -200,6 +201,7 @@ async fn serves_over_a_real_loopback_socket() -> TestResult {
     let state = Arc::new(AccordionSwitchboardState {
         charter: CharterStatus::from_bytes(SAMPLE.to_vec(), None),
         stele_genesis: false,
+        ledgers: None,
         runner_addr: dead_port().await?,
     });
     tokio::spawn(hcc_daemon::serve(listener, state));
@@ -258,6 +260,7 @@ async fn sealed_boot_writes_genesis_and_reports_it() -> TestResult {
         let state = AccordionSwitchboardState {
             charter,
             stele_genesis: stele.genesis,
+            ledgers: None,
             runner_addr: dead_port().await?,
         };
         let (_, body) = get_with(state, loopback_peer(), "M09-RamGenie").await?;
@@ -289,6 +292,7 @@ async fn unsealed_boot_never_opens_the_stele() -> TestResult {
     let state = AccordionSwitchboardState {
         charter,
         stele_genesis: stele.genesis,
+        ledgers: None,
         runner_addr: dead_port().await?,
     };
     let (_, body) = get_with(state, loopback_peer(), "M09-RamGenie").await?;

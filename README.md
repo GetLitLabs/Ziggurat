@@ -16,9 +16,9 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `hcc-krypt` | RMK → KEK (BLAKE3 `derive_key`, context `HCC-KRYPT-STRATUM-v2`) → DEK (ChaCha20-Poly1305 wrap) → FEK (wrapped under DEK; AES-256-GCM data); random nonces; zeroize on drop. Not wired into the daemon yet |
 | `hcc-baton` | `hcc_baton_trace_ledger`: frozen envelope, hash-chained traces, record + replay, abort triggers |
 | `hcc-vanguard` | 35-entry job table with JSON handoff; `scribe.stele.append` live; seed/inspect `Err(Unwired)`; the rest `Err(Unimplemented)` |
-| `hcc-daemon` | Loopback-only `GET /v1/ziggurat/pillar/{module_id}/status` on 127.0.0.1:7749; opens the stele on a sealed boot |
+| `hcc-daemon` | Loopback-only on 127.0.0.1:7749: `GET /v1/ziggurat/pillar/{module_id}/status` and `POST /v1/ramgenie/dispatch`; opens the stele and BATON ledger on a sealed boot |
 
-No dispatch, Tauri, or cockpit yet. Krypt, BATON and Vanguard are not wired into the daemon. Nothing here is operations-ready until
+No Tauri, cockpit, `hcc-seed`, healer, or gates script yet. Krypt and Vanguard are not wired into the daemon. Nothing here is operations-ready until
 `cargo test --workspace` passes on the operator machine.
 
 ## Seal ceremony (operator machine)
@@ -107,3 +107,19 @@ produces genesis `blake3_digest` `35401ED11F7C7CFC403E89F833C5C56115987C3EF0BBBB
 ```sql
 SELECT stele_id, hex(prev_digest), hex(blake3_digest) FROM hcc_precedent_stele;
 ```
+
+## Dispatch (model weights are optional weather)
+
+With a local runner (Ollama-compatible `/api/chat`) on 127.0.0.1:11434:
+
+```bash
+curl -s -X POST http://127.0.0.1:7749/v1/ramgenie/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{"model":"ziggurat:1.0.0","bsmc_namespace":"seed.scaffold.emit","terrace_level":3,"operator_prompt":"Scaffold crate capsnap with sqlite wal schema."}'
+```
+
+Only a royal-sealed charter with an open, verified vault can dispatch. The charter text is the
+system message. On success the daemon records a BATON trace, appends a `genie.dispatch.local`
+stele row that embeds the envelope hex, and returns `DISPATCH_SEALED` with
+`baton_envelope_blake3_hex`, `baton_trace_id`, and `stele_dispatch_row_id`. If the runner is down
+the reply is HTTP 502 and nothing is appended. Error strings: `SPEC/ERRORS.md`.

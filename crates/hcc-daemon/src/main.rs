@@ -62,6 +62,7 @@ async fn main() -> ExitCode {
     let state = Arc::new(AccordionSwitchboardState {
         charter,
         stele_genesis: stele.genesis,
+        ledgers: stele.ledgers.map(std::sync::Mutex::new),
         runner_addr: RUNNER_ADDR,
     });
     match serve(listener, state).await {
