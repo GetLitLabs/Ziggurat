@@ -1,8 +1,11 @@
 # Ziggurat v1.0.0 workspace. Members are crates that compile, nothing else.
-# Empty until hcc-seal, hcc-xtask, and hcc-daemon land on the plumb line.
 [workspace]
 resolver = "2"
-members = []
+members = [
+    "crates/hcc-types",
+    "crates/hcc-seal",
+    "crates/hcc-xtask",
+]
 
 [workspace.package]
 version = "1.0.0"
@@ -17,3 +20,11 @@ unsafe_code = "forbid"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+
+[workspace.dependencies]
+hcc-types = { path = "crates/hcc-types" }
+hcc-seal = { path = "crates/hcc-seal" }
+blake3 = { version = "1.8", default-features = false }
+ed25519-dalek = { version = "2.1", default-features = false }
+getrandom = "0.2"
+hex = "0.4"
