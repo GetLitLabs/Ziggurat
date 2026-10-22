@@ -214,13 +214,36 @@ impl BatonLedger {
         prompt: &[u8],
         response: &[u8],
     ) -> Result<Trace, BatonError> {
+        self.record_then(
+            charter_digest,
+            namespace,
+            terrace,
+            prompt,
+            response,
+            |_, _| Ok::<(), BatonError>(()),
+        )
+        .map(|(trace, ())| trace)
+    }
+
+    /// Record a trace and run `then` inside the same IMMEDIATE transaction before committing.
+    /// If `then` fails, the trace is rolled back too: both rows land, or neither does.
+    pub fn record_then<T, E: From<BatonError>>(
+        &mut self,
+        charter_digest: &Digest,
+        namespace: &str,
+        terrace: TerraceLevel,
+        prompt: &[u8],
+        response: &[u8],
+        then: impl FnOnce(&rusqlite::Transaction<'_>, &Trace) -> Result<T, E>,
+    ) -> Result<(Trace, T), E> {
         let ns = BsmcNamespace::parse(namespace).map_err(|_| BatonError::BadNamespace)?;
         let prompt_hash = *blake3::hash(prompt).as_bytes();
         let response_hash = *blake3::hash(response).as_bytes();
         let envelope = baton_envelope(charter_digest, &ns, terrace, &prompt_hash, &response_hash);
         let tx = self
             .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(BatonError::from)?;
         let head: Option<(Vec<u8>, i64)> = tx
             .query_row(
                 "SELECT baton_envelope_sig, sequence_number FROM hcc_baton_trace_ledger
@@ -228,7 +251,8 @@ impl BatonLedger {
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .optional()?;
+            .optional()
+            .map_err(BatonError::from)?;
         let (prev_digest, sequence_number) = match head {
             Some((bytes, seq)) => (digest(0, "baton_envelope_sig", bytes)?, seq + 1),
             None => (GENESIS_PREV_DIGEST, 1),
@@ -247,11 +271,17 @@ impl BatonLedger {
                 &response_hash[..],
                 &envelope[..],
             ],
-        )?;
+        )
+        .map_err(BatonError::from)?;
         let trace_id = tx.last_insert_rowid();
-        tx.commit()?;
         let sql = format!("SELECT {COLUMNS} FROM hcc_baton_trace_ledger WHERE trace_id = ?1");
-        decode(self.conn.query_row(&sql, params![trace_id], raw)?)
+        let trace = decode(
+            tx.query_row(&sql, params![trace_id], raw)
+                .map_err(BatonError::from)?,
+        )?;
+        let extra = then(&tx, &trace)?;
+        tx.commit().map_err(BatonError::from)?;
+        Ok((trace, extra))
     }
 
     /// `baton.state.replay`: recompute every envelope under `charter_digest`. Returns the count.

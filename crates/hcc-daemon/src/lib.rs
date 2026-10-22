@@ -406,29 +406,32 @@ async fn ramgenie_dispatch(
         eprintln!("hcc-daemon: {}: {detail}", e::LEDGER_WRITE);
         refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_WRITE.into())
     };
-    let trace = ledgers
+    // The BATON trace and its stele row commit in one transaction on the vault file:
+    // both land or neither does.
+    let pubkey = ledgers.operator_pubkey;
+    let model = request.model.clone();
+    let (trace, stele_id) = ledgers
         .baton
-        .record(
+        .record_then(
             charter.digest(),
             namespace.as_str(),
             terrace,
             request.operator_prompt.as_bytes(),
             output.as_bytes(),
+            |tx, trace| {
+                let payload = dispatch_payload(
+                    &model,
+                    namespace.as_str(),
+                    terrace,
+                    trace.trace_id,
+                    &digest_hex(&trace.envelope),
+                );
+                hcc_iedb_stele::append_in(tx, "genie.dispatch.local", &payload, &pubkey, None)
+                    .map_err(|err| LedgerWrite(err.to_string()))
+            },
         )
-        .map_err(|err| write_failed(err.to_string()))?;
+        .map_err(|LedgerWrite(detail)| write_failed(detail))?;
     let envelope_hex = digest_hex(&trace.envelope);
-    let payload = dispatch_payload(
-        &request.model,
-        namespace.as_str(),
-        terrace,
-        trace.trace_id,
-        &envelope_hex,
-    );
-    let pubkey = ledgers.operator_pubkey;
-    let row = ledgers
-        .stele
-        .append("genie.dispatch.local", &payload, &pubkey, None)
-        .map_err(|err| write_failed(err.to_string()))?;
 
     Ok(Json(DispatchSealed {
         status: "DISPATCH_SEALED",
@@ -437,9 +440,18 @@ async fn ramgenie_dispatch(
         charter_blake3_hex: charter.digest_hex(),
         baton_envelope_blake3_hex: envelope_hex,
         baton_trace_id: trace.trace_id,
-        stele_dispatch_row_id: row.stele_id,
+        stele_dispatch_row_id: stele_id,
         model_output: output,
     }))
+}
+
+/// Why a dispatch could not be recorded; logged, never sent (the wire gets `LEDGER_WRITE`).
+struct LedgerWrite(String);
+
+impl From<hcc_baton::BatonError> for LedgerWrite {
+    fn from(err: hcc_baton::BatonError) -> Self {
+        Self(err.to_string())
+    }
 }
 
 /// Origins of the Tauri webview that hosts the origami cockpit (Linux/macOS, then Windows).

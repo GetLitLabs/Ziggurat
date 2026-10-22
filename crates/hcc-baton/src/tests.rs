@@ -219,3 +219,44 @@ fn shares_the_vault_file_with_the_stele_in_wal() -> TestResult {
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+#[test]
+fn record_then_rolls_back_the_trace_when_the_follow_up_fails() -> TestResult {
+    let mut ledger = BatonLedger::open_in_memory()?;
+    let terrace = TerraceLevel::try_from(3u8)?;
+    let failed = ledger.record_then(
+        &charter(),
+        "genie.dispatch.local",
+        terrace,
+        b"p",
+        b"r",
+        |_, _| Err::<(), BatonError>(BatonError::BadNamespace),
+    );
+    assert!(failed.is_err());
+    assert!(
+        ledger.last()?.is_none(),
+        "a failed follow-up must not leave a trace"
+    );
+
+    let (trace, seen) = ledger.record_then(
+        &charter(),
+        "genie.dispatch.local",
+        terrace,
+        b"p",
+        b"r",
+        |tx, trace| {
+            let n: i64 = tx.query_row("SELECT count(*) FROM hcc_baton_trace_ledger", [], |r| {
+                r.get(0)
+            })?;
+            Ok::<_, BatonError>((n, trace.trace_id))
+        },
+    )?;
+    assert_eq!(
+        seen,
+        (1, trace.trace_id),
+        "the follow-up sees the uncommitted trace"
+    );
+    assert_eq!(trace.sequence_number, 1);
+    assert_eq!(ledger.replay(&charter())?, 1);
+    Ok(())
+}

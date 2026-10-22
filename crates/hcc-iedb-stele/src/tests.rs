@@ -253,3 +253,32 @@ fn genesis_for_the_frozen_charter() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn append_in_commits_only_with_the_callers_transaction() -> TestResult {
+    let dir = std::env::temp_dir().join(format!("hcc-stele-append-in-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("vault.db");
+    let mut stele = Stele::open(&path)?;
+    stele.append("scribe.stele.append", b"first", &[1; 32], None)?;
+
+    let mut other = rusqlite::Connection::open(&path)?;
+    {
+        let tx = other.transaction()?;
+        append_in(&tx, "genie.dispatch.local", b"dropped", &[1; 32], None)?;
+        // dropped without commit: rolled back
+    }
+    assert_eq!(stele.len()?, 1);
+
+    let tx = other.transaction()?;
+    let id = append_in(&tx, "genie.dispatch.local", b"kept", &[1; 32], None)?;
+    assert!(append_in(&tx, "nodot", b"x", &[1; 32], None).is_err());
+    tx.commit()?;
+    assert_eq!(id, 2);
+    assert_eq!(stele.len()?, 2);
+    assert_eq!(stele.verify_chain()?, 2);
+    drop(stele);
+    drop(other);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}

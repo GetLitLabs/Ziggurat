@@ -277,44 +277,16 @@ impl Stele {
         ed25519_pubkey: &[u8; 32],
         royal_seal_sig: Option<&[u8; 64]>,
     ) -> Result<SteleRow, SteleError> {
-        BsmcNamespace::parse(module_namespace).map_err(|_| SteleError::BadNamespace)?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let head: Option<Vec<u8>> = tx
-            .query_row(
-                "SELECT blake3_digest FROM hcc_precedent_stele ORDER BY stele_id DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let prev_digest = match head {
-            Some(bytes) => fixed::<32>(0, "blake3_digest", bytes)?,
-            None => GENESIS_PREV_DIGEST,
-        };
-        let digest = stele_digest(&prev_digest, payload);
-        let payload_len = i64::try_from(payload.len()).map_err(|_| SteleError::Corrupt {
-            stele_id: 0,
-            column: "payload_byte_len",
-        })?;
-        tx.execute(
-            "INSERT INTO hcc_precedent_stele
-               (prev_digest, module_namespace, version_tag, domain_separator, payload,
-                payload_byte_len, blake3_digest, ed25519_pubkey, royal_seal_sig)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                &prev_digest[..],
-                module_namespace,
-                VERSION_TAG,
-                &STELE_DOMAIN[..],
-                payload,
-                payload_len,
-                &digest[..],
-                &ed25519_pubkey[..],
-                royal_seal_sig.map(|s| &s[..]),
-            ],
+        let stele_id = append_in(
+            &tx,
+            module_namespace,
+            payload,
+            ed25519_pubkey,
+            royal_seal_sig,
         )?;
-        let stele_id = tx.last_insert_rowid();
         tx.commit()?;
         self.row(stele_id)?
             .ok_or(SteleError::ChainBroken { stele_id })
@@ -392,6 +364,53 @@ impl Stele {
     fn connection(&self) -> &Connection {
         &self.conn
     }
+}
+
+/// Chain one row onto the stele inside a transaction the caller owns, on any connection to the
+/// vault file. Lets another ledger (BATON) commit its row and the stele row atomically.
+/// Returns the new `stele_id`; nothing is visible until the caller commits.
+pub fn append_in(
+    tx: &rusqlite::Transaction<'_>,
+    module_namespace: &str,
+    payload: &[u8],
+    ed25519_pubkey: &[u8; 32],
+    royal_seal_sig: Option<&[u8; 64]>,
+) -> Result<i64, SteleError> {
+    BsmcNamespace::parse(module_namespace).map_err(|_| SteleError::BadNamespace)?;
+    let head: Option<Vec<u8>> = tx
+        .query_row(
+            "SELECT blake3_digest FROM hcc_precedent_stele ORDER BY stele_id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let prev_digest = match head {
+        Some(bytes) => fixed::<32>(0, "blake3_digest", bytes)?,
+        None => GENESIS_PREV_DIGEST,
+    };
+    let digest = stele_digest(&prev_digest, payload);
+    let payload_len = i64::try_from(payload.len()).map_err(|_| SteleError::Corrupt {
+        stele_id: 0,
+        column: "payload_byte_len",
+    })?;
+    tx.execute(
+        "INSERT INTO hcc_precedent_stele
+           (prev_digest, module_namespace, version_tag, domain_separator, payload,
+            payload_byte_len, blake3_digest, ed25519_pubkey, royal_seal_sig)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            &prev_digest[..],
+            module_namespace,
+            VERSION_TAG,
+            &STELE_DOMAIN[..],
+            payload,
+            payload_len,
+            &digest[..],
+            &ed25519_pubkey[..],
+            royal_seal_sig.map(|s| &s[..]),
+        ],
+    )?;
+    Ok(tx.last_insert_rowid())
 }
 
 #[cfg(test)]
