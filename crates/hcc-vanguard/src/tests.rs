@@ -107,13 +107,57 @@ fn scribe_appends_a_chained_stele_row() -> TestResult {
     Ok(())
 }
 
+fn repo_root() -> &'static Path {
+    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+}
+
 #[test]
-fn gate_validate_is_still_unwired() -> TestResult {
-    let (outcome, stele) = run(
-        r#"{"job":"inspect.gate.validate","bsmc_namespace":"inspect.gate.validate","terrace_level":3,"payload":{}}"#,
+fn gate_validate_runs_in_process_gates_and_records_verdicts() -> TestResult {
+    // Gates 1, 3, 4 and 5 spawn cargo; a test must not recurse into `cargo test`.
+    let (outcome, stele) = run_in(
+        r#"{"job":"inspect.gate.validate","bsmc_namespace":"inspect.gate.validate","terrace_level":4,"payload":{"gates":[2,6,7,8,10,11]}}"#,
+        Some(repo_root()),
     )?;
-    assert!(matches!(outcome, Err(VanguardError::Unwired { .. })));
-    assert_eq!(stele.len()?, 1, "must not touch the stele");
+    let out = outcome?;
+    assert_eq!(out["total"], 6);
+    let failed: Vec<u64> = out["gates"]
+        .as_array()
+        .ok_or("no gates")?
+        .iter()
+        .filter(|g| g["pass"] == false)
+        .filter_map(|g| g["gate"].as_u64())
+        .collect();
+    // Gate 8 (Tauri CSP) must fail honestly until src-tauri exists.
+    let tauri_built = repo_root().join("src-tauri/tauri.conf.json").exists();
+    assert_eq!(failed, if tauri_built { vec![] } else { vec![8] });
+    assert_eq!(out["all_passed"], tauri_built);
+    let record = String::from_utf8(stele.last()?.ok_or("no row")?.payload)?;
+    assert!(record.starts_with("HCC-GATES-v1\ngate=02 PASS\n"));
+    assert!(record.ends_with(&format!("passed={}/6\n", 6 - failed.len())));
+    assert_eq!(stele.verify_chain()?, 2);
+    Ok(())
+}
+
+#[test]
+fn gate_validate_refuses_bad_selection_or_missing_workspace() -> TestResult {
+    let (outcome, stele) = run(
+        r#"{"job":"inspect.gate.validate","bsmc_namespace":"inspect.gate.validate","terrace_level":4,"payload":{"gates":[2]}}"#,
+    )?;
+    assert!(matches!(outcome, Err(VanguardError::NoWorkspace)));
+    assert_eq!(stele.len()?, 1);
+    for gates in ["[]", "[12]", "[\"2\"]", "2"] {
+        let (outcome, stele) = run_in(
+            &format!(
+                r#"{{"job":"inspect.gate.validate","bsmc_namespace":"inspect.gate.validate","terrace_level":4,"payload":{{"gates":{gates}}}}}"#
+            ),
+            Some(repo_root()),
+        )?;
+        assert!(
+            matches!(outcome, Err(VanguardError::BadPayload(_))),
+            "{gates}"
+        );
+        assert_eq!(stele.len()?, 1);
+    }
     Ok(())
 }
 

@@ -10,19 +10,29 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `charters/ZIGGURAT_v1.0.0.txt` | Frozen: 4660 bytes, LF only, no BOM |
 | `hcc-types` | `TerraceLevel` (1..=5), `BsmcNamespace` (must contain a dot) |
 | `hcc-seal` | `no_std`; domain-separated BLAKE3, Ed25519 verify, `SystemCharter<Unsealed>` / `<RoyalSealed>` |
-| `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene`, `seed <blueprint.json>` |
+| `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene`, `seed <blueprint.json>`, `gates [--only N,N]` (M11 audit, INDEX §14) |
 | `crates/hcc-seal/src/baked.rs` | Length + digest baked; **no royal seal yet**, so the charter stays Unsealed |
 | `hcc-iedb-stele` | Append-only hash-chained stele in SQLite WAL; abort triggers; genesis embeds the charter |
 | `hcc-krypt` | RMK → KEK (BLAKE3 `derive_key`, context `HCC-KRYPT-STRATUM-v2`) → DEK (ChaCha20-Poly1305 wrap) → FEK (wrapped under DEK; AES-256-GCM data); random nonces; zeroize on drop. Not wired into the daemon yet |
 | `hcc-baton` | `hcc_baton_trace_ledger`: frozen envelope, hash-chained traces, record + replay, abort triggers |
-| `hcc-vanguard` | 35-entry job table with JSON handoff; `scribe.stele.append` and `seed.scaffold.emit` live; `inspect.gate.validate` `Err(Unwired)`; the rest `Err(Unimplemented)` |
+| `hcc-vanguard` | 35-entry job table with JSON handoff; `scribe.stele.append`, `seed.scaffold.emit` and `inspect.gate.validate` live; the rest `Err(Unimplemented)` |
 | `hcc-seed` | M05 Code A Seed: validated blueprint JSON → `crates/<name>` (Cargo.toml, lib, schema tests, WAL); deterministic; adds the workspace member; `cargo check --offline`, rolled back on failure; never overwrites |
 | `hcc-wasi-healer` | M04: wasmi 2 (pure Rust interpreter) sandbox with a 10M fuel cap, 16 MiB memory cap, one instance and zero host imports (any import, WASI `path_open` included, is refused before instantiation). `diagnose` runs the start section and `_start`, then reports exported memories and fuel used. `fixtures/healer_empty.wasm` is the 8-byte empty module. Not wired into Vanguard or the daemon; `healer.patch.apply` stays TYPED |
 | `capsnap` | Demo crate written by `xtask seed blueprints/capsnap.json`; pinned to its blueprint by a drift test |
 | `hcc-daemon` | Loopback-only on 127.0.0.1:7749: `GET /v1/ziggurat/pillar/{module_id}/status` and `POST /v1/ramgenie/dispatch`; opens the stele and BATON ledger on a sealed boot |
 
-No Tauri, cockpit, or gates script yet. Krypt and Vanguard are not wired into the daemon. Nothing here is operations-ready until
+No Tauri or cockpit yet, so the audit reports 9/11 (gates 8 and 9 fail by design until they exist). Krypt and Vanguard are not wired into the daemon. Nothing here is operations-ready until
 `cargo test --workspace` passes on the operator machine.
+
+## Nine gates (M11)
+
+```sh
+bash scripts/nine_gates_audit.sh          # Linux/macOS/Git Bash
+cargo run -p hcc-xtask -- gates           # same checks; works in PowerShell
+cargo run -p hcc-xtask -- gates --only 2,6,10
+```
+
+Each line prints `GATE NN PASS|FAIL` with what was observed. The command exits non-zero unless every selected gate passes.
 
 ## Seal ceremony (operator machine)
 

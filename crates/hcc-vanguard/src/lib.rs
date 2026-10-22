@@ -2,8 +2,7 @@
 //!
 //! Every job name comes from `INDEX.md` §4.1 or §11. Three are live in v1.0.0:
 //! `scribe.stele.append`, `seed.scaffold.emit`, `inspect.gate.validate`.
-//! `scribe.stele.append` and `seed.scaffold.emit` execute; `inspect.gate.validate`
-//! returns `Err(Unwired)` until `scripts/nine_gates_audit.sh` exists.
+//! All three execute.
 //! Every TYPED job returns `Err(Unimplemented)`. Nothing reports success it did not earn.
 #![forbid(unsafe_code)]
 
@@ -149,7 +148,7 @@ impl fmt::Display for VanguardError {
                 "{job} is live in the spec but not wired yet: needs {needs}"
             ),
             Self::Stele(err) => write!(f, "stele: {err}"),
-            Self::NoWorkspace => f.write_str("seed.scaffold.emit needs a workspace root"),
+            Self::NoWorkspace => f.write_str("this job needs a workspace root"),
             Self::Seed(err) => write!(f, "seed: {err}"),
         }
     }
@@ -172,9 +171,12 @@ pub fn dispatch(handoff: &Handoff, ctx: &mut VanguardContext<'_>) -> Result<Valu
         (JobStatus::Live, "seed.scaffold.emit") => {
             seed_scaffold_emit(&namespace, terrace, &handoff.payload, ctx)
         }
+        (JobStatus::Live, "inspect.gate.validate") => {
+            inspect_gate_validate(&namespace, terrace, &handoff.payload, ctx)
+        }
         (JobStatus::Live, name) => Err(VanguardError::Unwired {
             job: name,
-            needs: "scripts/nine_gates_audit.sh",
+            needs: "a handler",
         }),
     }
 }
@@ -260,6 +262,72 @@ fn seed_scaffold_emit(
         "blueprint_blake3_hex": digest_hex(&report.emit.blueprint_blake3),
         "files": files,
         "cargo_check": "passed",
+        "stele_id": row.stele_id,
+        "blake3_hex": digest_hex(&row.blake3_digest),
+    }))
+}
+
+/// `inspect.gate.validate`: payload `{ "gates": [n, ...] }` (default: all eleven, INDEX §14).
+/// Runs the M11 audit against the workspace and records one stele row with every verdict.
+/// Failing gates are reported as failures in the result; the job itself only errors when it
+/// cannot run or record.
+fn inspect_gate_validate(
+    namespace: &BsmcNamespace<'_>,
+    terrace: TerraceLevel,
+    payload: &Value,
+    ctx: &mut VanguardContext<'_>,
+) -> Result<Value, VanguardError> {
+    let root = ctx.workspace_root.ok_or(VanguardError::NoWorkspace)?;
+    let selection: Vec<u8> = match payload.get("gates") {
+        None => hcc_xtask::gates::ALL.to_vec(),
+        Some(list) => list
+            .as_array()
+            .and_then(|items| {
+                items
+                    .iter()
+                    .map(|g| g.as_u64().and_then(|n| u8::try_from(n).ok()))
+                    .collect::<Option<Vec<u8>>>()
+            })
+            .filter(|gates| {
+                !gates.is_empty() && gates.iter().all(|g| hcc_xtask::gates::ALL.contains(g))
+            })
+            .ok_or(VanguardError::BadPayload(
+                "inspect.gate.validate takes {\"gates\": [1..=11, ...]}",
+            ))?,
+    };
+    let results = hcc_xtask::gates::run(root, &selection);
+    let passed = results.iter().filter(|r| r.pass).count();
+    let mut record = String::from("HCC-GATES-v1\n");
+    for result in &results {
+        record.push_str(&format!(
+            "gate={:02} {}\n",
+            result.gate,
+            if result.pass { "PASS" } else { "FAIL" }
+        ));
+    }
+    record.push_str(&format!("passed={passed}/{}\n", results.len()));
+    let row = ctx
+        .stele
+        .append(
+            namespace.as_str(),
+            record.as_bytes(),
+            &ctx.royal.operator_pubkey,
+            None,
+        )
+        .map_err(VanguardError::Stele)?;
+    let gates: Vec<Value> = results
+        .iter()
+        .map(|r| json!({ "gate": r.gate, "name": r.name, "pass": r.pass, "detail": r.detail }))
+        .collect();
+    Ok(json!({
+        "job": "inspect.gate.validate",
+        "bsmc_namespace": namespace.as_str(),
+        "terrace_level": terrace.as_u8(),
+        "charter_blake3_hex": ctx.charter.digest_hex(),
+        "passed": passed,
+        "total": results.len(),
+        "all_passed": passed == results.len(),
+        "gates": gates,
         "stele_id": row.stele_id,
         "blake3_hex": digest_hex(&row.blake3_digest),
     }))

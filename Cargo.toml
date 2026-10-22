@@ -32,6 +32,9 @@ panic = "deny"
 [workspace.dependencies]
 hcc-types = { path = "crates/hcc-types" }
 hcc-seed = { path = "crates/hcc-seed" }
+hcc-krypt = { path = "crates/hcc-krypt" }
+hcc-wasi-healer = { path = "crates/hcc-wasi-healer" }
+hcc-xtask = { path = "crates/hcc-xtask" }
 hcc-seal = { path = "crates/hcc-seal" }
 hcc-iedb-stele = { path = "crates/hcc-iedb-stele" }
 hcc-baton = { path = "crates/hcc-baton" }

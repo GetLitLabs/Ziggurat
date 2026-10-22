@@ -3,6 +3,7 @@
 //! keygen        [--out-dir keys]
 //! sign-charter  <charter> --key keys/operator.key [--out keys/charter.sig]
 //! seal-charter  <charter> [--pubkey keys/operator.pub --sig keys/charter.sig]
+//! gates         [--only 2,6,10]   (M11 audit, INDEX §14; exits non-zero unless every selected gate passes)
 //! seed          <blueprint.json>   (emit crates/<name>, add workspace member, cargo check; rolls back on failure)
 #![forbid(unsafe_code)]
 
@@ -98,6 +99,28 @@ fn run(args: &[String]) -> Result<(), XtaskError> {
             println!("{path}: UTF-8, LF only, no BOM, single final newline");
             Ok(())
         }
+        Some("gates") => {
+            let selection: Vec<u8> = match flag(args, "--only")? {
+                None => hcc_xtask::gates::ALL.to_vec(),
+                Some(list) => list
+                    .split(',')
+                    .map(|g| g.trim().parse::<u8>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| XtaskError::Usage("--only takes gate numbers like 2,6,10".into()))?,
+            };
+            let root = workspace_root();
+            let results = hcc_xtask::gates::run(&root, &selection);
+            for result in &results {
+                println!("{result}");
+            }
+            let passed = results.iter().filter(|r| r.pass).count();
+            println!("GATES {passed}/{} PASS", results.len());
+            if passed == results.len() {
+                Ok(())
+            } else {
+                Err(XtaskError::GatesFailed(results.len() - passed))
+            }
+        }
         Some("seed") => {
             let path = args
                 .get(1)
@@ -114,7 +137,7 @@ fn run(args: &[String]) -> Result<(), XtaskError> {
             Ok(())
         }
         _ => Err(XtaskError::Usage(
-            "commands: keygen | sign-charter <charter> --key <file> | seal-charter <charter> [--pubkey <file> --sig <file>] | hygiene <charter> | seed <blueprint.json>".into(),
+            "commands: keygen | sign-charter <charter> --key <file> | seal-charter <charter> [--pubkey <file> --sig <file>] | hygiene <charter> | seed <blueprint.json> | gates [--only N,N]".into(),
         )),
     }
 }

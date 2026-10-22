@@ -1,6 +1,8 @@
 //! Seal ceremony logic for `hcc-xtask`. Pure functions here; file I/O in main.
 #![forbid(unsafe_code)]
 
+pub mod gates;
+
 use std::fmt;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -21,6 +23,7 @@ pub enum XtaskError {
     Rng(getrandom::Error),
     Seal(SealError),
     Seed(hcc_seed::SeedError),
+    GatesFailed(usize),
 }
 
 impl fmt::Display for XtaskError {
@@ -33,6 +36,7 @@ impl fmt::Display for XtaskError {
             Self::Rng(err) => write!(f, "os entropy: {err}"),
             Self::Seal(err) => write!(f, "seal: {err}"),
             Self::Seed(err) => write!(f, "seed: {err}"),
+            Self::GatesFailed(n) => write!(f, "{n} gate(s) failed"),
         }
     }
 }

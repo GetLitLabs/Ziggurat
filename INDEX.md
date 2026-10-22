@@ -300,8 +300,12 @@ Handoff JSON: `{ "job", "bsmc_namespace", "terrace_level", "payload" }`.
 
 `hcc-vanguard::VANGUARD_TABLE` holds 35 named jobs: the three above plus every §4.1 marker. As a
 *dispatchable job* each §4.1 marker is TYPED (the underlying function may already be LIVE in its
-crate). In this build `scribe.stele.append` and `seed.scaffold.emit` execute; `inspect.gate.validate`
-returns `Err(Unwired)` until `scripts/nine_gates_audit.sh` exists.
+crate). In this build all three live jobs execute.
+
+`inspect.gate.validate` payload: `{ "gates": [1..=11, ...] }` (default: all of §14). It runs the same checks as
+`scripts/nine_gates_audit.sh` (a thin wrapper over `cargo run -p hcc-xtask -- gates`, so Windows runs the
+same code), returns every verdict with its detail, and appends one stele row `HCC-GATES-v1\ngate=NN PASS|FAIL\n…passed=P/T\n`.
+Gates 8 and 9 FAIL until `src-tauri/` and `origami/dist` exist; a failing gate is never reported as a pass.
 
 `seed.scaffold.emit` payload: `{ "blueprint": { "name", "summary", "tables": [{ "name", "columns": [{ "name", "type" }] }] } }`
 (`type` ∈ INTEGER | TEXT | BLOB | REAL; names from allow-lists, so nothing in a blueprint reaches Rust or SQL

@@ -514,6 +514,7 @@ dependencies = [
  "hcc-seal",
  "hcc-seed",
  "hcc-types",
+ "hcc-xtask",
  "serde",
  "serde_json",
 ]
@@ -534,9 +535,16 @@ dependencies = [
  "blake3",
  "ed25519-dalek",
  "getrandom",
+ "hcc-baton",
+ "hcc-iedb-stele",
+ "hcc-krypt",
  "hcc-seal",
  "hcc-seed",
+ "hcc-types",
+ "hcc-wasi-healer",
  "hex",
+ "rusqlite",
+ "serde_json",
  "zeroize",
 ]
 
