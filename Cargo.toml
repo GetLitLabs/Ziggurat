@@ -1,0 +1,19 @@
+# Ziggurat v1.0.0 workspace. Members are crates that compile, nothing else.
+# Empty until hcc-seal, hcc-xtask, and hcc-daemon land on the plumb line.
+[workspace]
+resolver = "2"
+members = []
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "LicenseRef-HCC-Sovereign-Perpetual"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
