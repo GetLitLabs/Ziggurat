@@ -12,9 +12,10 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `hcc-seal` | `no_std`; domain-separated BLAKE3, Ed25519 verify, `SystemCharter<Unsealed>` / `<RoyalSealed>` |
 | `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene` |
 | `crates/hcc-seal/src/baked.rs` | Length + digest baked; **no royal seal yet**, so the charter stays Unsealed |
-| `hcc-daemon` | Loopback-only `GET /v1/ziggurat/pillar/{module_id}/status` on 127.0.0.1:7749 |
+| `hcc-iedb-stele` | Append-only hash-chained stele in SQLite WAL; abort triggers; genesis embeds the charter |
+| `hcc-daemon` | Loopback-only `GET /v1/ziggurat/pillar/{module_id}/status` on 127.0.0.1:7749; opens the stele on a sealed boot |
 
-No dispatch, stele, Tauri, or cockpit yet. Nothing here is operations-ready until
+No dispatch, krypt, BATON, Tauri, or cockpit yet. Nothing here is operations-ready until
 `cargo test --workspace` passes on the operator machine.
 
 ## Seal ceremony (operator machine)
@@ -70,14 +71,36 @@ ziggurat/
 ## Run the daemon
 
 ```bash
-cargo run -p hcc-daemon            # from the workspace root; --charter <path> to override
+cargo run -p hcc-daemon            # from the workspace root; --charter <path>, --db <path> to override
 curl -s http://127.0.0.1:7749/v1/ziggurat/pillar/M09-RamGenie/status
 ```
 
 The daemon boots whether or not the seal holds. `charter_blake3_hex` is computed from the
 file at boot and must equal `seal-charter`'s `charter_blake3_hex`. `charter_sealed` is `true`
 and `status` is `ROYAL_SEAL_LOCKED` only after the operator's royal seal is baked; otherwise
-`status` is `UNSEALED` and `seal_error` says why. A missing model runner on 127.0.0.1:11434
+`status` is `UNSEALED` and `seal_error` says why (values in `SPEC/ERRORS.md`).
+On a royal-sealed boot the daemon opens `eduba_vault.db` (WAL), appends the genesis stele
+if the vault is empty, verifies the whole chain, and reports `stele_genesis: true`. An
+unsealed boot never opens or creates the vault. A missing model runner on 127.0.0.1:11434
 is a warning and `runner_up: false`, never a crash. Module ids: `M01-NeuralHighway`,
 `M02-Accordion`, `M03-Krypt`, `M04-WasiHealer`, `M05-CodeASeed`, `M06-Polymorph`,
 `M07-Genesis`, `M08-ZeroTrace`, `M09-RamGenie`, `M10-Baton`, `M11-Lense`, `M12-Origami`.
+
+## Genesis stele
+
+Row 1 of `hcc_precedent_stele` has `prev_digest` = 32 zero bytes, namespace
+`ziggurat.daemon.boot`, and this exact payload:
+
+```text
+HCC-GENESIS-v1
+ziggurat_version=1.0.0
+charter_byte_len=4660
+charter_blake3_hex=cd380eae2bf4ef632316f7720d0aad77b2b916f86232c394ca2b6192004e3b96
+```
+
+Its digest does not depend on the operator key, so every honest seal of this charter
+produces genesis `blake3_digest` `35401ED11F7C7CFC403E89F833C5C56115987C3EF0BBBB072F732F440FE1F040`:
+
+```sql
+SELECT stele_id, hex(prev_digest), hex(blake3_digest) FROM hcc_precedent_stele;
+```
