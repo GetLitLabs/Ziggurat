@@ -1500,6 +1500,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",

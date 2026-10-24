@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::extract::{ConnectInfo, Path as UrlPath, Request, State};
+use axum::extract::rejection::BytesRejection;
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path as UrlPath, Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -37,6 +38,10 @@ pub const DEFAULT_CHARTER_PATH: &str = "charters/ZIGGURAT_v1.0.0.txt";
 pub const DEFAULT_DB_PATH: &str = "eduba_vault.db";
 /// `seal_error` when the charter file cannot be read. The path and io error go to the boot log only.
 pub const CHARTER_UNREADABLE: &str = "charter file unreadable";
+/// Largest dispatch body accepted. Larger bodies get `dispatch_error::TOO_LARGE` as JSON.
+pub const DISPATCH_MAX_BODY_BYTES: usize = 1024 * 1024;
+/// Vault lock wait shared by the stele and the BATON ledger.
+pub const VAULT_BUSY_TIMEOUT: Duration = hcc_iedb_stele::BUSY_TIMEOUT;
 
 /// The twelve pillars. Status is served only for these ids.
 pub const MODULE_IDS: [&str; 12] = [
@@ -290,6 +295,7 @@ async fn pillar_status(
 /// Dispatch refusals. Fixed strings, listed in `SPEC/ERRORS.md`.
 pub mod dispatch_error {
     pub const NON_LOOPBACK: &str = "non-loopback peer refused";
+    pub const TOO_LARGE: &str = "dispatch body exceeds 1048576 bytes";
     pub const BAD_JSON: &str =
         "dispatch body must be JSON {model, bsmc_namespace, terrace_level, operator_prompt}";
     pub const BAD_TERRACE: &str = "terrace_level must be 1..=5";
@@ -301,8 +307,9 @@ pub mod dispatch_error {
     pub const LEDGER_LOCK: &str = "ledger lock poisoned";
     pub const LEDGER_WRITE: &str = "ledger append failed";
 
-    pub const ALL: [&str; 10] = [
+    pub const ALL: [&str; 11] = [
         NON_LOOPBACK,
+        TOO_LARGE,
         BAD_JSON,
         BAD_TERRACE,
         BAD_NAMESPACE,
@@ -362,12 +369,17 @@ pub fn dispatch_payload(
 async fn ramgenie_dispatch(
     State(state): State<Arc<AccordionSwitchboardState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    body: Bytes,
+    body: Result<Bytes, BytesRejection>,
 ) -> Reply<DispatchSealed> {
     use dispatch_error as e;
     if !peer.ip().is_loopback() {
         return Err(refuse(StatusCode::FORBIDDEN, e::NON_LOOPBACK.into()));
     }
+    // Over the limit is 413 with the documented string; any other body failure is bad JSON.
+    let body = body.map_err(|rejection| match rejection.status() {
+        StatusCode::PAYLOAD_TOO_LARGE => refuse(StatusCode::PAYLOAD_TOO_LARGE, e::TOO_LARGE.into()),
+        _ => refuse(StatusCode::BAD_REQUEST, e::BAD_JSON.into()),
+    })?;
     let request: DispatchRequest = serde_json::from_slice(&body)
         .map_err(|_| refuse(StatusCode::BAD_REQUEST, e::BAD_JSON.into()))?;
     let terrace = u8::try_from(request.terrace_level)
@@ -497,7 +509,10 @@ async fn cockpit_cors(request: Request, next: Next) -> Response {
 pub fn router(state: Arc<AccordionSwitchboardState>) -> Router {
     Router::new()
         .route("/v1/ziggurat/pillar/{module_id}/status", get(pillar_status))
-        .route("/v1/ramgenie/dispatch", post(ramgenie_dispatch))
+        .route(
+            "/v1/ramgenie/dispatch",
+            post(ramgenie_dispatch).layer(DefaultBodyLimit::max(DISPATCH_MAX_BODY_BYTES)),
+        )
         .layer(middleware::from_fn(cockpit_cors))
         .with_state(state)
 }
