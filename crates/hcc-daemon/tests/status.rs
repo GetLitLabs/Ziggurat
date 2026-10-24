@@ -48,12 +48,7 @@ async fn get(
     peer: SocketAddr,
     module_id: &str,
 ) -> Result<(StatusCode, Value), Box<dyn std::error::Error>> {
-    let state = AccordionSwitchboardState {
-        charter,
-        stele_genesis: false,
-        ledgers: None,
-        runner_addr,
-    };
+    let state = AccordionSwitchboardState::new(charter, false, None, runner_addr);
     get_with(state, peer, module_id).await
 }
 
@@ -198,12 +193,12 @@ async fn refuses_to_bind_non_loopback() {
 async fn serves_over_a_real_loopback_socket() -> TestResult {
     let listener = bind_loopback(SocketAddr::from(([127, 0, 0, 1], 0))).await?;
     let addr = listener.local_addr()?;
-    let state = Arc::new(AccordionSwitchboardState {
-        charter: CharterStatus::from_bytes(SAMPLE.to_vec(), None),
-        stele_genesis: false,
-        ledgers: None,
-        runner_addr: dead_port().await?,
-    });
+    let state = Arc::new(AccordionSwitchboardState::new(
+        CharterStatus::from_bytes(SAMPLE.to_vec(), None),
+        false,
+        None,
+        dead_port().await?,
+    ));
     tokio::spawn(hcc_daemon::serve(listener, state));
     let mut stream = TcpStream::connect(addr).await?;
     stream
@@ -257,12 +252,8 @@ async fn sealed_boot_writes_genesis_and_reports_it() -> TestResult {
         let charter = CharterStatus::from_bytes(SAMPLE.to_vec(), Some(&expected));
         let stele = SteleBoot::boot(&db, &charter, royal.as_ref());
         assert!(stele.genesis, "{}", stele.note);
-        let state = AccordionSwitchboardState {
-            charter,
-            stele_genesis: stele.genesis,
-            ledgers: None,
-            runner_addr: dead_port().await?,
-        };
+        let state =
+            AccordionSwitchboardState::new(charter, stele.genesis, None, dead_port().await?);
         let (_, body) = get_with(state, loopback_peer(), "M09-RamGenie").await?;
         assert_eq!(body["charter_sealed"], true);
         assert_eq!(body["stele_genesis"], true);
@@ -292,12 +283,7 @@ async fn unsealed_boot_never_opens_the_stele() -> TestResult {
     let stele = SteleBoot::boot(&db, &charter, None);
     assert!(!stele.genesis);
     assert!(!db.exists(), "unsealed boot must not create the vault");
-    let state = AccordionSwitchboardState {
-        charter,
-        stele_genesis: stele.genesis,
-        ledgers: None,
-        runner_addr: dead_port().await?,
-    };
+    let state = AccordionSwitchboardState::new(charter, stele.genesis, None, dead_port().await?);
     let (_, body) = get_with(state, loopback_peer(), "M09-RamGenie").await?;
     assert_eq!(body["stele_genesis"], false);
     if let Some(dir) = db.parent() {
@@ -328,12 +314,12 @@ async fn with_origin(
     method: &str,
     origin: Option<&str>,
 ) -> Result<axum::response::Response, Box<dyn std::error::Error>> {
-    let state = Arc::new(AccordionSwitchboardState {
-        charter: CharterStatus::from_bytes(SAMPLE.to_vec(), None),
-        stele_genesis: false,
-        ledgers: None,
-        runner_addr: dead_port().await?,
-    });
+    let state = Arc::new(AccordionSwitchboardState::new(
+        CharterStatus::from_bytes(SAMPLE.to_vec(), None),
+        false,
+        None,
+        dead_port().await?,
+    ));
     let mut request = Request::builder()
         .method(method)
         .uri("/v1/ziggurat/pillar/M09-RamGenie/status")
