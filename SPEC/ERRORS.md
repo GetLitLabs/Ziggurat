@@ -37,6 +37,7 @@ Body is `{"error": "<value>"}`. Nothing is appended to BATON or the stele on any
 | Value | HTTP | When |
 |---|---|---|
 | `non-loopback peer refused` | 403 | peer address is not loopback |
+| `dispatch body exceeds 1048576 bytes` | 413 | body is larger than `DISPATCH_MAX_BODY_BYTES` (1 MiB) |
 | `dispatch body must be JSON {model, bsmc_namespace, terrace_level, operator_prompt}` | 400 | malformed JSON, missing or unknown fields |
 | `terrace_level must be 1..=5` | 400 | terrace outside 1..=5 |
 | `bsmc_namespace must be dot-separated` | 400 | namespace without a dot or with an empty segment |
@@ -50,4 +51,4 @@ Body is `{"error": "<value>"}`. Nothing is appended to BATON or the stele on any
 | `runner HTTP exchange failed` | 502 | HTTP/1.1 exchange with the runner broke |
 | `runner response has no message.content` | 502 | runner reply is not Ollama `/api/chat` JSON |
 | `ledger lock poisoned` | 500 | an earlier panic poisoned the ledger lock |
-| `ledger append failed` | 500 | SQLite refused the BATON or stele append (detail in the daemon log) |
+| `ledger append failed` | 500 | SQLite refused the BATON or stele append, including a vault still locked by another connection after the 5 s busy timeout (detail in the daemon log) |
