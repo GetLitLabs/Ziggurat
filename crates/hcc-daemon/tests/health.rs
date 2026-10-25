@@ -222,3 +222,28 @@ fn index_documents_the_health_route() -> Result<(), std::io::Error> {
     assert!(index.contains("`lense.daemon.health`"));
     Ok(())
 }
+
+/// A commit from another connection between the health reads is not seen: the BATON head
+/// and the stele count and head all come from the snapshot the read transaction started on.
+#[tokio::test]
+async fn heads_come_from_one_snapshot_despite_a_concurrent_writer() -> TestResult {
+    let db = scratch("snapshot")?;
+    drop(sealed_state(&db, dead_port().await?));
+    let genesis = Stele::open(&db)?.last()?.ok_or("genesis row")?;
+    let mut reader = BatonLedger::open(&db)?;
+    let (before, after) = reader.snapshot_then(|tx, trace| {
+        assert!(trace.is_none());
+        let before = hcc_iedb_stele::head_in(tx)?;
+        let mut writer = Stele::open(&db)?;
+        writer.append("test.concurrent.writer", b"x", &[7u8; 32], None)?;
+        drop(writer);
+        let after = hcc_iedb_stele::head_in(tx)?;
+        Ok::<_, Box<dyn std::error::Error>>((before, after))
+    })?;
+    assert_eq!(before, (1, Some(genesis.blake3_digest)));
+    assert_eq!(after, before, "the commit landed outside this snapshot");
+    drop(reader);
+    assert_eq!(Stele::open(&db)?.len()?, 2, "the writer did commit");
+    cleanup(&db)?;
+    Ok(())
+}

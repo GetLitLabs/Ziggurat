@@ -281,40 +281,33 @@ pub struct DaemonHealth {
     pub loopback_peer: String,
 }
 
-/// Both chain heads as read from the vault.
+/// Both chain heads, read from one vault snapshot.
 struct LedgerHeads {
     stele_rows: u64,
-    /// Empty only if the stele has no rows.
-    stele_head_hex: String,
+    stele_head_hex: Option<String>,
     /// Last BATON trace id and its envelope hex.
     trace: Option<(i64, String)>,
 }
 
-/// Heads of both chains, or `None` on a read failure (logged, never invented).
+/// Heads of both chains from one read transaction, or `None` on a read failure (logged,
+/// never invented). The stele count and head are read on the BATON connection inside the
+/// same transaction, so another writer cannot slip a dispatch between the reads.
 fn ledger_heads(ledgers: &Mutex<Ledgers>) -> Option<LedgerHeads> {
-    let ledgers = ledgers.lock().ok()?;
-    let read = || -> Result<_, String> {
-        let rows = ledgers.stele.len().map_err(|e| e.to_string())?;
-        let head = ledgers
-            .stele
-            .last()
-            .map_err(|e| e.to_string())?
-            .map(|row| digest_hex(&row.blake3_digest))
-            .unwrap_or_default();
-        let trace = ledgers
-            .baton
-            .last()
-            .map_err(|e| e.to_string())?
-            .map(|t| (t.trace_id, digest_hex(&t.envelope)));
-        Ok(LedgerHeads {
-            stele_rows: rows,
-            stele_head_hex: head,
-            trace,
+    let mut ledgers = ledgers.lock().ok()?;
+    let mut read = || -> Result<LedgerHeads, LedgerWrite> {
+        ledgers.baton.snapshot_then(|tx, trace| {
+            let (rows, head) =
+                hcc_iedb_stele::head_in(tx).map_err(|e| LedgerWrite(e.to_string()))?;
+            Ok(LedgerHeads {
+                stele_rows: rows,
+                stele_head_hex: head.as_ref().map(digest_hex),
+                trace: trace.map(|(id, envelope)| (id, digest_hex(&envelope))),
+            })
         })
     };
     match read() {
         Ok(heads) => Some(heads),
-        Err(err) => {
+        Err(LedgerWrite(err)) => {
             eprintln!("hcc-daemon: health: ledger read failed: {err}");
             None
         }
@@ -334,11 +327,7 @@ async fn daemon_health(
     }
     let heads = state.ledgers.as_ref().and_then(ledger_heads);
     let (stele_rows, stele_head, trace) = match heads {
-        Some(h) => (
-            Some(h.stele_rows),
-            (!h.stele_head_hex.is_empty()).then_some(h.stele_head_hex),
-            h.trace,
-        ),
+        Some(h) => (Some(h.stele_rows), h.stele_head_hex, h.trace),
         None => (None, None, None),
     };
     let health = &state.health;
@@ -630,7 +619,7 @@ async fn dispatch_sealed(
     }))
 }
 
-/// Why a dispatch could not be recorded; logged, never sent (the wire gets `LEDGER_WRITE`).
+/// Why a ledger read or write failed; logged, never sent (dispatch gets `LEDGER_WRITE`).
 struct LedgerWrite(String);
 
 impl From<hcc_baton::BatonError> for LedgerWrite {

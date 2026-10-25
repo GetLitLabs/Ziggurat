@@ -231,6 +231,34 @@ impl BatonLedger {
         .map(|(trace, ())| trace)
     }
 
+    /// Read the last trace (id and envelope) and run `then` in one read transaction, so every
+    /// read `then` makes on `tx` (the stele head, say) comes from the same vault snapshot.
+    pub fn snapshot_then<T, E: From<BatonError>>(
+        &mut self,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, Option<(i64, Digest)>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(BatonError::from)?;
+        let head: Option<(i64, Vec<u8>)> = tx
+            .query_row(
+                "SELECT trace_id, baton_envelope_sig FROM hcc_baton_trace_ledger
+                 ORDER BY trace_id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(BatonError::from)?;
+        let head = match head {
+            Some((id, bytes)) => Some((id, digest(id, "baton_envelope_sig", bytes)?)),
+            None => None,
+        };
+        let out = then(&tx, head)?;
+        tx.commit().map_err(BatonError::from)?;
+        Ok(out)
+    }
+
     /// Record a trace and run `then` inside the same IMMEDIATE transaction before committing.
     /// If `then` fails, the trace is rolled back too: both rows land, or neither does.
     pub fn record_then<T, E: From<BatonError>>(

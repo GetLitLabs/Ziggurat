@@ -372,6 +372,26 @@ impl Stele {
     }
 }
 
+/// Row count and head digest read inside a transaction the caller owns, so they come from the
+/// same snapshot as anything else the caller reads in it (`None` head on an empty stele).
+pub fn head_in(tx: &rusqlite::Transaction<'_>) -> Result<(u64, Option<Digest>), SteleError> {
+    let (count, head): (i64, Option<Vec<u8>>) = tx.query_row(
+        "SELECT count(*),
+                (SELECT blake3_digest FROM hcc_precedent_stele ORDER BY stele_id DESC LIMIT 1)
+         FROM hcc_precedent_stele",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let count = u64::try_from(count).map_err(|_| SteleError::Corrupt {
+        stele_id: 0,
+        column: "count",
+    })?;
+    let head = head
+        .map(|bytes| fixed::<32>(0, "blake3_digest", bytes))
+        .transpose()?;
+    Ok((count, head))
+}
+
 /// Chain one row onto the stele inside a transaction the caller owns, on any connection to the
 /// vault file. Lets another ledger (BATON) commit its row and the stele row atomically.
 /// Returns the new `stele_id`; nothing is visible until the caller commits.
