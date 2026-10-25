@@ -11,8 +11,9 @@ pub mod ramgenie;
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use axum::extract::rejection::BytesRejection;
@@ -202,6 +203,154 @@ pub struct AccordionSwitchboardState {
     /// `None` unless the charter is royal-sealed and both chains verified at boot.
     pub ledgers: Option<Mutex<Ledgers>>,
     pub runner_addr: SocketAddr,
+    /// In-process counters for `GET /v1/ziggurat/health`. Never leave the machine.
+    pub health: HealthLog,
+}
+
+impl AccordionSwitchboardState {
+    pub fn new(
+        charter: CharterStatus,
+        stele_genesis: bool,
+        ledgers: Option<Ledgers>,
+        runner_addr: SocketAddr,
+    ) -> Self {
+        Self {
+            charter,
+            stele_genesis,
+            ledgers: ledgers.map(Mutex::new),
+            runner_addr,
+            health: HealthLog::new(),
+        }
+    }
+}
+
+/// `lense.daemon.health` counters: boot instant, dispatch outcomes, the last refusal.
+pub struct HealthLog {
+    started: Instant,
+    dispatches_sealed: AtomicU64,
+    dispatches_refused: AtomicU64,
+    last_dispatch_error: Mutex<Option<String>>,
+}
+
+impl HealthLog {
+    pub fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            dispatches_sealed: AtomicU64::new(0),
+            dispatches_refused: AtomicU64::new(0),
+            last_dispatch_error: Mutex::new(None),
+        }
+    }
+
+    fn sealed(&self) {
+        self.dispatches_sealed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `error` is the same string the operator was sent.
+    fn refused(&self, error: &str) {
+        self.dispatches_refused.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut last) = self.last_dispatch_error.lock() {
+            *last = Some(error.to_owned());
+        }
+    }
+}
+
+impl Default for HealthLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// `GET /v1/ziggurat/health`. Counts are read from the vault; nothing is estimated.
+#[derive(Debug, Serialize)]
+pub struct DaemonHealth {
+    pub ziggurat_version: &'static str,
+    pub charter_sealed: bool,
+    pub stele_genesis: bool,
+    pub ledgers_open: bool,
+    /// `null` when the ledgers are not open or could not be read.
+    pub stele_rows: Option<u64>,
+    pub stele_head_blake3_hex: Option<String>,
+    pub baton_last_trace_id: Option<i64>,
+    pub baton_head_envelope_hex: Option<String>,
+    pub runner_up: bool,
+    pub uptime_secs: u64,
+    pub dispatches_sealed: u64,
+    pub dispatches_refused: u64,
+    pub last_dispatch_error: Option<String>,
+    pub loopback_peer: String,
+}
+
+/// Both chain heads, read from one vault snapshot.
+struct LedgerHeads {
+    stele_rows: u64,
+    stele_head_hex: Option<String>,
+    /// Last BATON trace id and its envelope hex.
+    trace: Option<(i64, String)>,
+}
+
+/// Heads of both chains from one read transaction, or `None` on a read failure (logged,
+/// never invented). The stele count and head are read on the BATON connection inside the
+/// same transaction, so another writer cannot slip a dispatch between the reads.
+fn ledger_heads(ledgers: &Mutex<Ledgers>) -> Option<LedgerHeads> {
+    let mut ledgers = ledgers.lock().ok()?;
+    let mut read = || -> Result<LedgerHeads, LedgerWrite> {
+        ledgers.baton.snapshot_then(|tx, trace| {
+            let (rows, head) =
+                hcc_iedb_stele::head_in(tx).map_err(|e| LedgerWrite(e.to_string()))?;
+            Ok(LedgerHeads {
+                stele_rows: rows,
+                stele_head_hex: head.as_ref().map(digest_hex),
+                trace: trace.map(|(id, envelope)| (id, digest_hex(&envelope))),
+            })
+        })
+    };
+    match read() {
+        Ok(heads) => Some(heads),
+        Err(LedgerWrite(err)) => {
+            eprintln!("hcc-daemon: health: ledger read failed: {err}");
+            None
+        }
+    }
+}
+
+/// `lense.daemon.health`
+async fn daemon_health(
+    State(state): State<Arc<AccordionSwitchboardState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> Reply<DaemonHealth> {
+    if !peer.ip().is_loopback() {
+        return Err(refuse(
+            StatusCode::FORBIDDEN,
+            format!("non-loopback peer {peer} refused"),
+        ));
+    }
+    let heads = state.ledgers.as_ref().and_then(ledger_heads);
+    let (stele_rows, stele_head, trace) = match heads {
+        Some(h) => (Some(h.stele_rows), h.stele_head_hex, h.trace),
+        None => (None, None, None),
+    };
+    let health = &state.health;
+    Ok(Json(DaemonHealth {
+        ziggurat_version: ZIGGURAT_VERSION,
+        charter_sealed: state.charter.is_sealed(),
+        stele_genesis: state.stele_genesis,
+        ledgers_open: state.ledgers.is_some(),
+        stele_rows,
+        stele_head_blake3_hex: stele_head,
+        baton_last_trace_id: trace.as_ref().map(|t| t.0),
+        baton_head_envelope_hex: trace.map(|t| t.1),
+        runner_up: probe_runner(state.runner_addr).await,
+        uptime_secs: health.started.elapsed().as_secs(),
+        dispatches_sealed: health.dispatches_sealed.load(Ordering::Relaxed),
+        dispatches_refused: health.dispatches_refused.load(Ordering::Relaxed),
+        last_dispatch_error: health
+            .last_dispatch_error
+            .lock()
+            .ok()
+            .and_then(|last| last.clone()),
+        loopback_peer: peer.to_string(),
+    }))
 }
 
 #[derive(Debug, Serialize)]
@@ -365,10 +514,23 @@ pub fn dispatch_payload(
     .into_bytes()
 }
 
-/// `genie.dispatch.local`
+/// `genie.dispatch.local`: the handler records every outcome in `HealthLog`.
 async fn ramgenie_dispatch(
     State(state): State<Arc<AccordionSwitchboardState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    body: Result<Bytes, BytesRejection>,
+) -> Reply<DispatchSealed> {
+    let outcome = dispatch_sealed(&state, peer, body).await;
+    match &outcome {
+        Ok(_) => state.health.sealed(),
+        Err((_, Json(refusal))) => state.health.refused(&refusal.error),
+    }
+    outcome
+}
+
+async fn dispatch_sealed(
+    state: &AccordionSwitchboardState,
+    peer: SocketAddr,
     body: Result<Bytes, BytesRejection>,
 ) -> Reply<DispatchSealed> {
     use dispatch_error as e;
@@ -457,7 +619,7 @@ async fn ramgenie_dispatch(
     }))
 }
 
-/// Why a dispatch could not be recorded; logged, never sent (the wire gets `LEDGER_WRITE`).
+/// Why a ledger read or write failed; logged, never sent (dispatch gets `LEDGER_WRITE`).
 struct LedgerWrite(String);
 
 impl From<hcc_baton::BatonError> for LedgerWrite {
@@ -509,6 +671,7 @@ async fn cockpit_cors(request: Request, next: Next) -> Response {
 pub fn router(state: Arc<AccordionSwitchboardState>) -> Router {
     Router::new()
         .route("/v1/ziggurat/pillar/{module_id}/status", get(pillar_status))
+        .route("/v1/ziggurat/health", get(daemon_health))
         .route(
             "/v1/ramgenie/dispatch",
             post(ramgenie_dispatch).layer(DefaultBodyLimit::max(DISPATCH_MAX_BODY_BYTES)),
@@ -568,12 +731,12 @@ pub async fn boot_and_serve(
         ));
     }
     log(&format!("listening on http://{ACCORDION_ADDR}"));
-    let state = Arc::new(AccordionSwitchboardState {
+    let state = Arc::new(AccordionSwitchboardState::new(
         charter,
-        stele_genesis: stele.genesis,
-        ledgers: stele.ledgers.map(Mutex::new),
-        runner_addr: RUNNER_ADDR,
-    });
+        stele.genesis,
+        stele.ledgers,
+        RUNNER_ADDR,
+    ));
     serve(listener, state).await
 }
 

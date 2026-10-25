@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
 use axum::extract::ConnectInfo;
@@ -83,12 +83,7 @@ fn sealed_state(db: &std::path::Path, runner_addr: SocketAddr) -> AccordionSwitc
     let expected = sealed_constants();
     let charter = CharterStatus::from_bytes(CHARTER.to_vec(), Some(&expected));
     let boot = SteleBoot::boot(db, &charter, expected.royal.as_ref());
-    AccordionSwitchboardState {
-        charter,
-        stele_genesis: boot.genesis,
-        ledgers: boot.ledgers.map(Mutex::new),
-        runner_addr,
-    }
+    AccordionSwitchboardState::new(charter, boot.genesis, boot.ledgers, runner_addr)
 }
 
 async fn post_dispatch(
@@ -207,12 +202,12 @@ async fn runner_error_status_and_bad_body_are_502() -> TestResult {
 #[tokio::test]
 async fn unsealed_charter_cannot_dispatch() -> TestResult {
     let runner = fake_runner(json!({"message": {"content": "x"}}), StatusCode::OK).await?;
-    let state = AccordionSwitchboardState {
-        charter: CharterStatus::from_bytes(CHARTER.to_vec(), None),
-        stele_genesis: false,
-        ledgers: None,
-        runner_addr: runner,
-    };
+    let state = AccordionSwitchboardState::new(
+        CharterStatus::from_bytes(CHARTER.to_vec(), None),
+        false,
+        None,
+        runner,
+    );
     let (code, body) = post_dispatch(state, loopback(), GOOD).await?;
     assert_eq!(code, StatusCode::FORBIDDEN);
     assert_eq!(body["error"], dispatch_error::UNSEALED);
@@ -288,12 +283,12 @@ async fn non_loopback_peer_cannot_dispatch() -> TestResult {
 async fn sealed_without_ledger_is_held() -> TestResult {
     let runner = fake_runner(json!({"message": {"content": "x"}}), StatusCode::OK).await?;
     let expected = sealed_constants();
-    let state = AccordionSwitchboardState {
-        charter: CharterStatus::from_bytes(CHARTER.to_vec(), Some(&expected)),
-        stele_genesis: false,
-        ledgers: None,
-        runner_addr: runner,
-    };
+    let state = AccordionSwitchboardState::new(
+        CharterStatus::from_bytes(CHARTER.to_vec(), Some(&expected)),
+        false,
+        None,
+        runner,
+    );
     let (code, body) = post_dispatch(state, loopback(), GOOD).await?;
     assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["error"], dispatch_error::NO_LEDGER);
