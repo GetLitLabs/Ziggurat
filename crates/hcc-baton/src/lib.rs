@@ -12,12 +12,17 @@
 
 use std::fmt;
 use std::path::Path;
+use std::time::Duration;
 
 use hcc_seal::{Digest, BATON_DOMAIN};
 use hcc_types::{BsmcNamespace, TerraceLevel};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 pub const GENESIS_PREV_DIGEST: Digest = [0u8; 32];
+/// How long a write waits for another connection's lock on the vault file (a second daemon,
+/// a backup copy) before SQLite reports busy. rusqlite's own default is also 5 s; this pins it
+/// so a dependency bump cannot change it silently. Shared by the stele and the BATON ledger.
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS hcc_baton_trace_ledger (
@@ -190,6 +195,7 @@ impl BatonLedger {
     }
 
     fn init(conn: Connection) -> Result<Self, BatonError> {
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
         conn.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
@@ -223,6 +229,34 @@ impl BatonLedger {
             |_, _| Ok::<(), BatonError>(()),
         )
         .map(|(trace, ())| trace)
+    }
+
+    /// Read the last trace (id and envelope) and run `then` in one read transaction, so every
+    /// read `then` makes on `tx` (the stele head, say) comes from the same vault snapshot.
+    pub fn snapshot_then<T, E: From<BatonError>>(
+        &mut self,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, Option<(i64, Digest)>) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(BatonError::from)?;
+        let head: Option<(i64, Vec<u8>)> = tx
+            .query_row(
+                "SELECT trace_id, baton_envelope_sig FROM hcc_baton_trace_ledger
+                 ORDER BY trace_id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(BatonError::from)?;
+        let head = match head {
+            Some((id, bytes)) => Some((id, digest(id, "baton_envelope_sig", bytes)?)),
+            None => None,
+        };
+        let out = then(&tx, head)?;
+        tx.commit().map_err(BatonError::from)?;
+        Ok(out)
     }
 
     /// Record a trace and run `then` inside the same IMMEDIATE transaction before committing.

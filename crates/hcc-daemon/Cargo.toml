@@ -25,6 +25,7 @@ ed25519-dalek.workspace = true
 serde_json.workspace = true
 tower.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
+rusqlite.workspace = true
 
 [lints]
 workspace = true

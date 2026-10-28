@@ -77,7 +77,7 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | M05 | `M05-CodeASeed` | Code A Seed | `seed.*` `ziggurat.*` | **LIVE** | `hcc-seed` |
 | M06 | `M06-Polymorph` | Polymorphic Engine | `polymorph.*` | TYPED | xtask target-cpu only |
 | M07 | `M07-Genesis` | Genesis / Chare | `genesis.*` `chare.*` | TYPED | metadata on stele rows |
-| M08 | `M08-ZeroTrace` | Zero-Trace | `zerotrace.*` `trace.*` | TYPED | crypto-shred only when built |
+| M08 | `M08-ZeroTrace` | Zero-Trace | `zerotrace.*` `trace.*` | **LIVE** (crate) | `hcc-zerotrace` |
 | M09 | `M09-RamGenie` | RamGenie | `genie.*` | **LIVE** | `hcc-daemon` |
 | M10 | `M10-Baton` | BATON / Konjure / Curie-Monet | `baton.*` `konjure.*` `curie_monet.*` | **LIVE** (BATON) / TYPED (rest) | `hcc-baton` |
 | M11 | `M11-Lense` | Lense / Inspect-A-File | `lense.*` `inspect.*` | **LIVE** | `scripts/nine_gates_audit.sh` |
@@ -106,8 +106,8 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `polymorph.emit.native` | M06 | TYPED |
 | `genesis.charter.version` | M07 | TYPED |
 | `chare.provenance.tag` | M07 | TYPED — 67/30/3 metadata |
-| `zerotrace.key.destroy` | M08 | TYPED |
-| `krypt.death.keyDestroy` | M08 | TYPED |
+| `zerotrace.key.destroy` | M08 | LIVE — `Keyring::destroy` |
+| `krypt.death.keyDestroy` | M08 | LIVE — same function |
 | `genie.prompt.seal` | M09 | LIVE |
 | `genie.dispatch.local` | M09 | LIVE |
 | `baton.trace.record` | M10 | LIVE |
@@ -115,6 +115,7 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `konjure.pipeline.init` | M10 | TYPED |
 | `curie_monet.verify` | M10 | TYPED |
 | `lense.pillar.status` | M11 | LIVE |
+| `lense.daemon.health` | M11 | LIVE |
 | `inspect.gate.validate` | M11 | LIVE |
 | `origami.fold.assemble` | M12 | LIVE |
 | `sue.cockpit.mount` | M12 | LIVE |
@@ -136,6 +137,7 @@ The HTTP `module_id` column is the wire: `hcc_daemon::MODULE_IDS` serves exactly
 | `hcc-seal` | T1 no_std | T1 | BLAKE3 domain hash, Ed25519 verify, typestate `Unsealed`/`RoyalSealed` |
 | `hcc-iedb-stele` | T2 | T1 | Hash-chained stele, WAL, immutable triggers |
 | `hcc-krypt` | T2 | T1 | 4-stratum wrap/unwrap, `Zeroize` |
+| `hcc-zerotrace` | T2 | T1 | Keyring table, crypto-shred, deletion certificate |
 | `hcc-daemon` | T2 lib+bin | T2–T3 | Bind `127.0.0.1:7749`, status, dispatch |
 | `hcc-baton` | T2 | T4 | Record/replay envelopes |
 | `hcc-seed` | T2 | T3 | Write real crate files + tests |
@@ -167,6 +169,7 @@ ziggurat/
 ├── crates/hcc-seal/src/baked.rs      ← xtask output only
 ├── crates/hcc-iedb-stele/
 ├── crates/hcc-krypt/
+├── crates/hcc-zerotrace/
 ├── crates/hcc-daemon/src/
 │   ├── lib.rs
 │   ├── main.rs
@@ -215,6 +218,7 @@ ziggurat/
 | Method | Path | Marker | Auth/guard |
 |---|---|---|---|
 | GET | `/v1/ziggurat/pillar/{module_id}/status` | `lense.pillar.status` | Loopback peer |
+| GET | `/v1/ziggurat/health` | `lense.daemon.health` | Loopback peer |
 | POST | `/v1/ramgenie/dispatch` | `genie.dispatch.local` | Loopback + sealed charter |
 
 ### 8.1 Status body
@@ -235,6 +239,12 @@ Reject: non-loopback, terrace ∉ 1..=5, namespace without `.`, unsealed charter
 
 Runner down → 502, UI red, no forged BATON.
 
+### 8.4 Health body
+
+`ziggurat_version`, `charter_sealed`, `stele_genesis`, `ledgers_open`, `stele_rows`, `stele_head_blake3_hex`, `baton_last_trace_id`, `baton_head_envelope_hex`, `runner_up`, `uptime_secs`, `dispatches_sealed`, `dispatches_refused`, `last_dispatch_error`, `loopback_peer`
+
+Rows and heads are read from the vault on each request; `null` when the ledgers are not open or the read fails (logged). Counters live in the daemon process and reset at boot. Nothing leaves the machine.
+
 ---
 
 ## 9. Ledger index
@@ -246,6 +256,7 @@ Runner down → 502, UI red, no forged BATON.
 | Stele | `b"HCC-STELLE-v2\x00"` (14) | Charter + stele rows. Spelling frozen |
 | BATON | `b"HCC-BATON-v1\x00"` (13) | Dispatch/trace envelopes |
 | Krypt HKDF | `"HCC-KRYPT-STRATUM-v2"` | KEK derive context string |
+| Zero-Trace | `b"HCC-ZEROTRACE-v1\x00"` (17) | Envelope fingerprint kept after a shred |
 
 ### 9.2 Tables
 
@@ -257,6 +268,9 @@ Genesis `prev_digest` = 32×`0x00`.
 
 **`hcc_baton_trace_ledger`**  
 `trace_id`, `prev_digest`, `module_namespace`, `sequence_number`, `terrace_level` CHECK 1–5, `input_state_hash`, `output_state_hash`, `baton_envelope_sig` UNIQUE, `recorded_at_utc`
+
+**`hcc_krypt_keyring`** (M08, same vault file)  
+`key_id` (first 16 bytes of the fingerprint, hex), `label` (1..=64 of `[A-Za-z0-9._-]`), `envelope_blake3` UNIQUE, `salt`, `dek_nonce`, `wrapped_dek`, `fek_nonce`, `wrapped_fek`, `created_at_utc`, `destroyed_at_utc`, `certificate_stele_id`. A row CHECK allows exactly two shapes: live (all key columns set, no certificate) or shredded (all key columns NULL, certificate set). Triggers refuse DELETE and any UPDATE other than live → shredded.
 
 **`hcc_ramgenie_dispatch_log`**  
 Optional denormalized view of dispatches; still chained; still append-only.
@@ -280,7 +294,18 @@ Optional denormalized view of dispatches; still chained; still append-only.
 
 `hcc-krypt` reading of IV: the FEK is wrapped under the DEK with ChaCha20-Poly1305 (the DEK's cipher); the FEK seals file bytes with AES-256-GCM. Wrapped keys carry their stratum name as AEAD associated data.
 
-Wipe (M08 when live) = crypto-shred keys + deletion certificate on stele. No SSD Gutmann claims.
+Wipe (M08) = crypto-shred keys + deletion certificate on stele. No SSD Gutmann claims.
+
+`hcc-zerotrace::Keyring` persists each `StratumEnvelope` (salt, wrapped DEK, wrapped FEK; never a plaintext key)
+in `hcc_krypt_keyring`, on a connection with `PRAGMA secure_delete = ON`. `destroy(key_id, operator_pubkey)` runs in
+one IMMEDIATE transaction: refuse unless stele row 1 is genesis, append the certificate row under
+`zerotrace.key.destroy`, NULL the salt and both wrapped keys (SQLite zeroes the freed bytes), commit, then
+`PRAGMA wal_checkpoint(TRUNCATE)`. Certificate payload:
+`HCC-ZEROTRACE-v1\nkey_id=…\nlabel=…\nenvelope_blake3_hex=…\ndestroyed=…\nmethod=…\nscope=…\n` where
+`envelope_blake3 = BLAKE3(b"HCC-ZEROTRACE-v1\x00" || salt || dek_nonce || wrapped_dek || fek_nonce || wrapped_fek)`.
+Scope is stated in the row: this vault file only; copies taken earlier still hold the envelope. `wal_truncated`
+is false when another connection kept the WAL busy. As Vanguard jobs both M08 markers stay TYPED; the daemon has
+no wipe route yet.
 
 Typestate: `SystemCharter<Unsealed>` has no `verified_prompt()`.
 
@@ -403,7 +428,7 @@ file to the charter. The charter file remains the only prompt source; the daemon
 | 8 | Tauri CSP contains both loopback hosts |
 | 9 | `origami/dist` exists; no non-loopback URLs |
 | 10 | stele/baton `prev_digest` + immutable triggers |
-| 11 | krypt round-trip + healer empty wasm under fuel |
+| 11 | krypt round-trip + zero-trace shred + healer empty wasm under fuel |
 
 ---
 
