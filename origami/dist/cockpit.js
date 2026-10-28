@@ -24,7 +24,7 @@ const MODULES = [
   { id: "M05-CodeASeed", terrace: 3, live: true },
   { id: "M06-Polymorph", terrace: 2, live: false },
   { id: "M07-Genesis", terrace: 1, live: false },
-  { id: "M08-ZeroTrace", terrace: 1, live: false },
+  { id: "M08-ZeroTrace", terrace: 1, live: true },
   { id: "M09-RamGenie", terrace: 3, live: true },
   { id: "M10-Baton", terrace: 4, live: true },
   { id: "M11-Lense", terrace: 4, live: true },

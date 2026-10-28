@@ -6,6 +6,7 @@
 //! freeze-vendor [--undo]          (vendor/ + local .cargo/config.toml, so cargo runs offline)
 //! gates         [--only 2,6,10]   (M11 audit, INDEX §14; exits non-zero unless every selected gate passes)
 //! seed          <blueprint.json>   (emit crates/<name>, add workspace member, cargo check; rolls back on failure)
+//! modelfile     --from <base>      (models/ziggurat-1.0.0.Modelfile from the sealed charter)
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
@@ -157,8 +158,24 @@ fn run(args: &[String]) -> Result<(), XtaskError> {
             println!("member               {}  (cargo check --offline passed)", report.member);
             Ok(())
         }
+        Some("modelfile") => {
+            use hcc_xtask::modelfile::{render, MODELFILE_PATH, MODEL_NAME};
+            let base = flag(args, "--from")?
+                .ok_or_else(|| XtaskError::Usage("modelfile --from <installed base model>".into()))?;
+            let root = workspace_root();
+            let charter = std::fs::read(root.join("charters").join("ZIGGURAT_v1.0.0.txt"))?;
+            let text = render(&charter, hcc_seal::BAKED_SEAL.as_ref(), base)?;
+            let target = root.join(MODELFILE_PATH);
+            if let Some(dir) = target.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&target, text.as_bytes())?;
+            println!("wrote                {MODELFILE_PATH}  ({} bytes, FROM {base})", text.len());
+            println!("next                 ollama create {MODEL_NAME} -f {MODELFILE_PATH}");
+            Ok(())
+        }
         _ => Err(XtaskError::Usage(
-            "commands: keygen | sign-charter <charter> --key <file> | seal-charter <charter> [--pubkey <file> --sig <file>] | hygiene <charter> | seed <blueprint.json> | gates [--only N,N] | freeze-vendor [--undo]".into(),
+            "commands: keygen | sign-charter <charter> --key <file> | seal-charter <charter> [--pubkey <file> --sig <file>] | hygiene <charter> | seed <blueprint.json> | gates [--only N,N] | freeze-vendor [--undo] | modelfile --from <base>".into(),
         )),
     }
 }

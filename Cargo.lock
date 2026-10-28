@@ -1500,6 +1500,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",
@@ -1604,10 +1605,23 @@ dependencies = [
  "hcc-seed",
  "hcc-types",
  "hcc-wasi-healer",
+ "hcc-zerotrace",
  "hex",
  "rusqlite",
  "serde_json",
  "zeroize",
+]
+
+[[package]]
+name = "hcc-zerotrace"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek",
+ "hcc-iedb-stele",
+ "hcc-krypt",
+ "hcc-seal",
+ "rusqlite",
 ]
 
 [[package]]

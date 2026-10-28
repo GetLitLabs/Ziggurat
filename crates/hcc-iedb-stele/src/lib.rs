@@ -8,6 +8,7 @@
 
 use std::fmt;
 use std::path::Path;
+use std::time::Duration;
 
 use hcc_seal::{
     digest_hex, verify_royal_seal, Digest, RoyalSeal, RoyalSealed, SealError, SystemCharter,
@@ -19,6 +20,10 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 pub const GENESIS_PREV_DIGEST: Digest = [0u8; 32];
 pub const GENESIS_NAMESPACE: &str = "ziggurat.daemon.boot";
 pub const VERSION_TAG: &str = "1.0.0";
+/// How long a write waits for another connection's lock on the vault file (a second daemon,
+/// a backup copy) before SQLite reports busy. rusqlite's own default is also 5 s; this pins it
+/// so a dependency bump cannot change it silently. Shared by the stele and the BATON ledger.
+pub const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS hcc_precedent_stele (
@@ -215,6 +220,7 @@ impl Stele {
     }
 
     fn init(conn: Connection) -> Result<Self, SteleError> {
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
         conn.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
@@ -364,6 +370,26 @@ impl Stele {
     fn connection(&self) -> &Connection {
         &self.conn
     }
+}
+
+/// Row count and head digest read inside a transaction the caller owns, so they come from the
+/// same snapshot as anything else the caller reads in it (`None` head on an empty stele).
+pub fn head_in(tx: &rusqlite::Transaction<'_>) -> Result<(u64, Option<Digest>), SteleError> {
+    let (count, head): (i64, Option<Vec<u8>>) = tx.query_row(
+        "SELECT count(*),
+                (SELECT blake3_digest FROM hcc_precedent_stele ORDER BY stele_id DESC LIMIT 1)
+         FROM hcc_precedent_stele",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let count = u64::try_from(count).map_err(|_| SteleError::Corrupt {
+        stele_id: 0,
+        column: "count",
+    })?;
+    let head = head
+        .map(|bytes| fixed::<32>(0, "blake3_digest", bytes))
+        .transpose()?;
+    Ok((count, head))
 }
 
 /// Chain one row onto the stele inside a transaction the caller owns, on any connection to the

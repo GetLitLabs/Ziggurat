@@ -12,6 +12,7 @@ members = [
     "crates/hcc-seed",
     "crates/hcc-wasi-healer",
     "crates/hcc-neural",
+    "crates/hcc-zerotrace",
     "crates/hcc-daemon",
     "crates/capsnap",
     "src-tauri",
@@ -43,6 +44,7 @@ hcc-iedb-stele = { path = "crates/hcc-iedb-stele" }
 hcc-baton = { path = "crates/hcc-baton" }
 hcc-vanguard = { path = "crates/hcc-vanguard" }
 hcc-neural = { path = "crates/hcc-neural" }
+hcc-zerotrace = { path = "crates/hcc-zerotrace" }
 blake3 = { version = "1.8", default-features = false }
 ed25519-dalek = { version = "2.1", default-features = false }
 getrandom = "0.2"
