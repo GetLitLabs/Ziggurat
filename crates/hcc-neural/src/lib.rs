@@ -266,6 +266,7 @@ impl LessonStore {
     /// Open the lesson tables inside the vault file at `path` (the same file as the stele).
     pub fn open(path: &Path) -> Result<Self, NeuralError> {
         let conn = Connection::open(path)?;
+        conn.busy_timeout(hcc_iedb_stele::BUSY_TIMEOUT)?;
         let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
         conn.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")?;
         // Storing a lesson chains a stele row, so the stele table must exist here too.

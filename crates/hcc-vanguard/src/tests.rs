@@ -5,6 +5,9 @@ use ed25519_dalek::{Signer, SigningKey};
 use hcc_iedb_stele::stele_digest;
 use hcc_seal::{charter_digest, SealConstants};
 
+use std::net::SocketAddr;
+use std::time::Duration;
+
 use super::*;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -48,28 +51,45 @@ fn run_in(
             royal: &royal,
             stele: &mut stele,
             workspace_root,
+            vault_path: None,
+            rmk: None,
         },
     );
     Ok((outcome, stele))
 }
 
+/// The live set is pinned: a job goes live only with a handler and a test in the same commit.
+pub(crate) const LIVE_JOBS: [&str; 12] = [
+    "scribe.stele.append",
+    "seed.scaffold.emit",
+    "inspect.gate.validate",
+    "krypt.stratum.init",
+    "krypt.stele.verify",
+    "vault.store.lesson",
+    "healer.diagnose.heap",
+    "wasi.sandbox.lock",
+    "zerotrace.key.destroy",
+    "krypt.death.keyDestroy",
+    "neural.retrieve.lesson",
+    "neural.index.upsert",
+];
+
 #[test]
-fn exactly_three_live_jobs_and_no_duplicates() {
+fn live_set_is_pinned_and_names_are_unique() {
     let live: Vec<&str> = VANGUARD_TABLE
         .iter()
         .filter(|j| j.status == JobStatus::Live)
         .map(|j| j.name)
         .collect();
-    assert_eq!(
-        live,
-        [
-            "scribe.stele.append",
-            "seed.scaffold.emit",
-            "inspect.gate.validate"
-        ]
-    );
+    assert_eq!(live, LIVE_JOBS);
     let names: HashSet<&str> = VANGUARD_TABLE.iter().map(|j| j.name).collect();
     assert_eq!(names.len(), VANGUARD_TABLE.len());
+    for job in VANGUARD_TABLE
+        .iter()
+        .filter(|j| j.status == JobStatus::Typed)
+    {
+        assert_eq!(job.exec, Exec::Ledger, "{}", job.name);
+    }
 }
 
 #[test]
@@ -263,5 +283,446 @@ fn handoff_is_validated_before_any_job_runs() -> TestResult {
         Handoff::from_json(r#"{"job":"x.y","bsmc_namespace":"x.y","terrace_level":1,"extra":1}"#),
         Err(VanguardError::BadHandoff(_))
     ));
+    Ok(())
+}
+
+/// A vault file with genesis, its stele, the sealed charter and an RMK.
+struct Vault {
+    dir: std::path::PathBuf,
+    charter: SystemCharter<RoyalSealed>,
+    royal: RoyalSeal,
+    stele: Stele,
+    rmk: RootMasterKey,
+}
+
+impl Vault {
+    fn new(tag: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let dir =
+            std::env::temp_dir().join(format!("hcc-vanguard-vault-{tag}-{}", std::process::id()));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir)?;
+        }
+        std::fs::create_dir_all(&dir)?;
+        let (charter, royal) = sealed()?;
+        let mut stele = Stele::open(&dir.join("eduba_vault.db"))?;
+        stele.ensure_genesis(&charter, &royal)?;
+        Ok(Self {
+            dir,
+            charter,
+            royal,
+            stele,
+            rmk: RootMasterKey::generate()?,
+        })
+    }
+
+    fn path(&self) -> std::path::PathBuf {
+        self.dir.join("eduba_vault.db")
+    }
+
+    fn run(
+        &mut self,
+        json: &str,
+        rmk: bool,
+    ) -> Result<Result<Value, VanguardError>, Box<dyn std::error::Error>> {
+        let handoff = Handoff::from_json(json)?;
+        let path = self.path();
+        Ok(dispatch(
+            &handoff,
+            &mut VanguardContext {
+                charter: &self.charter,
+                royal: &self.royal,
+                stele: &mut self.stele,
+                workspace_root: Some(repo_root()),
+                vault_path: Some(&path),
+                rmk: rmk.then_some(&self.rmk),
+            },
+        ))
+    }
+}
+
+impl Drop for Vault {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn handoff(job: &str, terrace: u8, payload: Value) -> String {
+    json!({ "job": job, "bsmc_namespace": job, "terrace_level": terrace, "payload": payload })
+        .to_string()
+}
+
+#[test]
+fn stratum_init_needs_the_rmk_then_records_the_key_on_the_stele() -> TestResult {
+    let mut vault = Vault::new("stratum")?;
+    let init = handoff("krypt.stratum.init", 1, json!({ "label": "lessons.v1" }));
+    assert!(matches!(
+        vault.run(&init, false)?,
+        Err(VanguardError::NoRmk)
+    ));
+    assert!(matches!(
+        vault.run(
+            &handoff("krypt.stratum.init", 1, json!({ "label": "no spaces" })),
+            true
+        )?,
+        Err(VanguardError::Keyring(
+            hcc_zerotrace::ZeroTraceError::BadLabel
+        ))
+    ));
+    assert_eq!(vault.stele.len()?, 1, "refusals write nothing");
+    let out = vault.run(&init, true)??;
+    assert_eq!(out["job"], "krypt.stratum.init");
+    assert_eq!(out["stele_id"], 2);
+    let key_id = out["key_id"].as_str().ok_or("no key_id")?;
+    assert_eq!(key_id.len(), 32);
+    let row = vault.stele.row(2)?.ok_or("no row")?;
+    assert_eq!(row.module_namespace, "krypt.stratum.init");
+    assert_eq!(out["blake3_hex"], digest_hex(&row.blake3_digest));
+    let text = String::from_utf8(row.payload)?;
+    assert!(text.starts_with(&format!(
+        "HCC-KRYPT-STRATUM-v1\nkey_id={key_id}\nlabel=lessons.v1\n"
+    )));
+    // The FEK really opens under this RMK.
+    let keyring = Keyring::open(&vault.path())?;
+    let fek = keyring.open_key(&vault.rmk, key_id)?;
+    let blob = hcc_krypt::encrypt_file(&fek, b"probe", b"sealed")?;
+    assert_eq!(
+        hcc_krypt::decrypt_file(&fek, b"probe", &blob)?.as_slice(),
+        b"sealed"
+    );
+    drop(keyring);
+    Ok(())
+}
+
+#[test]
+fn both_destroy_markers_shred_and_certify() -> TestResult {
+    let mut vault = Vault::new("destroy")?;
+    for (n, job) in ["zerotrace.key.destroy", "krypt.death.keyDestroy"]
+        .into_iter()
+        .enumerate()
+    {
+        let made = vault.run(
+            &handoff("krypt.stratum.init", 1, json!({ "label": format!("k{n}") })),
+            true,
+        )??;
+        let key_id = made["key_id"].as_str().ok_or("no key_id")?.to_owned();
+        let out = vault.run(&handoff(job, 1, json!({ "key_id": key_id })), false)??;
+        assert_eq!(out["key_status"], "DESTROYED");
+        assert_eq!(out["envelope_blake3_hex"], made["envelope_blake3_hex"]);
+        let cert_id = out["certificate_stele_id"].as_i64().ok_or("no cert id")?;
+        let row = vault.stele.row(cert_id)?.ok_or("no certificate row")?;
+        assert_eq!(row.module_namespace, "zerotrace.key.destroy");
+        assert!(String::from_utf8(row.payload)?
+            .starts_with(&format!("HCC-ZEROTRACE-v1\nkey_id={key_id}\n")));
+        let again = vault.run(&handoff(job, 1, json!({ "key_id": key_id })), false)?;
+        assert!(matches!(
+            again,
+            Err(VanguardError::Keyring(
+                hcc_zerotrace::ZeroTraceError::Destroyed { .. }
+            ))
+        ));
+        let keyring = Keyring::open(&vault.path())?;
+        assert!(
+            keyring.open_key(&vault.rmk, &key_id).is_err(),
+            "shredded key must not open"
+        );
+    }
+    for bad in [
+        json!({}),
+        json!({ "key_id": "../etc" }),
+        json!({ "key_id": "ABCDEF0123456789ABCDEF0123456789" }),
+    ] {
+        assert!(matches!(
+            vault.run(&handoff("zerotrace.key.destroy", 1, bad), false)?,
+            Err(VanguardError::BadPayload(_))
+        ));
+    }
+    assert!(matches!(
+        vault.run(
+            &handoff(
+                "zerotrace.key.destroy",
+                1,
+                json!({ "key_id": "0123456789abcdef0123456789abcdef" })
+            ),
+            false
+        )?,
+        Err(VanguardError::Keyring(
+            hcc_zerotrace::ZeroTraceError::NotFound(_)
+        ))
+    ));
+    assert_eq!(vault.stele.verify_chain()?, 5);
+    Ok(())
+}
+
+#[test]
+fn stele_verify_recomputes_chain_and_seal() -> TestResult {
+    let mut vault = Vault::new("verify")?;
+    vault.run(
+        &handoff("scribe.stele.append", 1, json!({ "text": "row two" })),
+        false,
+    )??;
+    let out = vault.run(&handoff("krypt.stele.verify", 1, json!({})), false)??;
+    assert_eq!(out["chain_rows_verified"], 2);
+    assert_eq!(out["head_stele_id"], 2);
+    let head = vault.stele.last()?.ok_or("no head")?;
+    assert_eq!(out["head_blake3_hex"], digest_hex(&head.blake3_digest));
+    assert_eq!(out["charter_version"], "1.0.0");
+    Ok(())
+}
+
+#[test]
+fn store_lesson_chains_hashes_only() -> TestResult {
+    let mut vault = Vault::new("lesson")?;
+    let body = "Never hold a std mutex across an await.";
+    let out = vault.run(
+        &handoff(
+            "vault.store.lesson",
+            3,
+            json!({ "title": "await rule", "body": body }),
+        ),
+        false,
+    )??;
+    assert_eq!(out["lesson_id"], 1);
+    assert_eq!(out["lesson_namespace"], "vault.store.lesson");
+    assert_eq!(
+        out["body_blake3_hex"],
+        digest_hex(blake3::hash(body.as_bytes()).as_bytes())
+    );
+    let row = vault.stele.row(2)?.ok_or("no row")?;
+    assert_eq!(row.module_namespace, "vault.store.lesson");
+    assert!(
+        !String::from_utf8(row.payload)?.contains(body),
+        "stele keeps hashes only"
+    );
+    let dup = vault.run(
+        &handoff(
+            "vault.store.lesson",
+            3,
+            json!({ "title": "again", "body": body }),
+        ),
+        false,
+    )?;
+    assert!(matches!(
+        dup,
+        Err(VanguardError::Neural(NeuralError::Duplicate {
+            lesson_id: 1
+        }))
+    ));
+    assert!(matches!(
+        vault.run(
+            &handoff("vault.store.lesson", 3, json!({ "title": "no body" })),
+            false
+        )?,
+        Err(VanguardError::BadPayload(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn healer_diagnoses_the_committed_fixture_under_the_lock() -> TestResult {
+    let mut vault = Vault::new("healer")?;
+    let out = vault.run(&handoff("healer.diagnose.heap", 2, json!({})), false)??;
+    let fixture = std::fs::read(repo_root().join("fixtures/healer_empty.wasm"))?;
+    assert_eq!(out["fixture"], "fixtures/healer_empty.wasm");
+    assert_eq!(out["wasm_byte_len"], fixture.len());
+    assert_eq!(
+        out["wasm_blake3_hex"],
+        digest_hex(blake3::hash(&fixture).as_bytes())
+    );
+    assert_eq!(out["fuel_cap"], SandboxPolicy::LOCKED.fuel);
+    for bad in [
+        "../Cargo.toml",
+        "x/../../a.wasm",
+        ".hidden.wasm",
+        "healer_empty.wat",
+    ] {
+        assert!(
+            matches!(
+                vault.run(
+                    &handoff("healer.diagnose.heap", 2, json!({ "fixture": bad })),
+                    false
+                )?,
+                Err(VanguardError::BadPayload(_))
+            ),
+            "{bad}"
+        );
+    }
+    assert!(matches!(
+        vault.run(
+            &handoff(
+                "healer.diagnose.heap",
+                2,
+                json!({ "fixture": "missing.wasm" })
+            ),
+            false
+        )?,
+        Err(VanguardError::Io(_))
+    ));
+    let lock = vault.run(&handoff("wasi.sandbox.lock", 2, json!({})), false)??;
+    assert_eq!(lock["fuel"], SandboxPolicy::LOCKED.fuel);
+    assert_eq!(lock["memory_bytes"], SandboxPolicy::LOCKED.memory_bytes);
+    assert_eq!(lock["declared_paths"], json!([]));
+    assert_eq!(vault.stele.len()?, 1, "read-only jobs write no stele row");
+    Ok(())
+}
+
+#[test]
+fn ledger_jobs_without_a_vault_are_refused() -> TestResult {
+    for json in [
+        handoff("krypt.stratum.init", 1, json!({ "label": "x" })),
+        handoff(
+            "vault.store.lesson",
+            3,
+            json!({ "title": "t", "body": "b" }),
+        ),
+        handoff(
+            "zerotrace.key.destroy",
+            1,
+            json!({ "key_id": "0123456789abcdef0123456789abcdef" }),
+        ),
+    ] {
+        let (outcome, stele) = run(&json)?;
+        assert!(matches!(outcome, Err(VanguardError::NoVault)), "{json}");
+        assert_eq!(stele.len()?, 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn runner_jobs_refuse_the_ledger_executor_and_vice_versa() -> TestResult {
+    let (outcome, _) = run(&handoff(
+        "neural.retrieve.lesson",
+        3,
+        json!({ "model": "m", "query": "q" }),
+    ))?;
+    assert!(matches!(
+        outcome,
+        Err(VanguardError::WrongExec {
+            exec: Exec::Runner,
+            ..
+        })
+    ));
+    let vault = Vault::new("wrongexec")?;
+    let path = vault.path();
+    let ctx = RunnerContext {
+        charter: &vault.charter,
+        vault_path: &path,
+        runner_addr: "127.0.0.1:9".parse()?,
+        timeout: Duration::from_secs(2),
+    };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let h = Handoff::from_json(&handoff("scribe.stele.append", 1, json!({ "text": "x" })))?;
+    assert!(matches!(
+        rt.block_on(dispatch_runner(&h, &ctx)),
+        Err(VanguardError::WrongExec {
+            exec: Exec::Ledger,
+            ..
+        })
+    ));
+    Ok(())
+}
+
+/// Fake runner `/api/embed`: maps each input to a fixed 3-d vector by its first byte.
+async fn fake_embed() -> Result<SocketAddr, std::io::Error> {
+    use axum::routing::post;
+    use axum::{Json, Router};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let app = Router::new().route(
+        "/api/embed",
+        post(|Json(req): Json<Value>| async move {
+            let vectors: Vec<Value> = req["input"]
+                .as_array()
+                .map(|inputs| {
+                    inputs
+                        .iter()
+                        .map(|t| match t.as_str().and_then(|t| t.bytes().next()) {
+                            Some(b'A') => json!([1.0, 0.0, 0.0]),
+                            Some(b'B') => json!([0.0, 1.0, 0.0]),
+                            _ => json!([0.0, 0.0, 1.0]),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Json(json!({ "embeddings": vectors }))
+        }),
+    );
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    Ok(addr)
+}
+
+#[test]
+fn neural_jobs_index_then_retrieve_through_the_runner() -> TestResult {
+    let mut vault = Vault::new("neural")?;
+    for (title, body) in [
+        ("alpha", "A lesson about seals"),
+        ("beta", "B lesson about BATON"),
+    ] {
+        vault.run(
+            &handoff(
+                "vault.store.lesson",
+                3,
+                json!({ "title": title, "body": body }),
+            ),
+            false,
+        )??;
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let path = vault.path();
+    let down = RunnerContext {
+        charter: &vault.charter,
+        vault_path: &path,
+        runner_addr: rt.block_on(async {
+            tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await?
+                .local_addr()
+        })?,
+        timeout: Duration::from_secs(2),
+    };
+    let upsert = Handoff::from_json(&handoff(
+        "neural.index.upsert",
+        3,
+        json!({ "model": "nomic-embed-text" }),
+    ))?;
+    assert!(matches!(
+        rt.block_on(dispatch_runner(&upsert, &down)),
+        Err(VanguardError::Neural(NeuralError::Embed(
+            hcc_neural::EmbedError::Unreachable
+        )))
+    ));
+    let up = RunnerContext {
+        runner_addr: rt.block_on(fake_embed())?,
+        ..down
+    };
+    let out = rt.block_on(dispatch_runner(&upsert, &up))?;
+    assert_eq!(out["indexed"], 2);
+    assert_eq!(out["dim"], 3);
+    assert_eq!(
+        rt.block_on(dispatch_runner(&upsert, &up))?["indexed"],
+        0,
+        "nothing pending"
+    );
+    let retrieve = Handoff::from_json(&handoff(
+        "neural.retrieve.lesson",
+        3,
+        json!({ "model": "nomic-embed-text", "query": "B?", "k": 1 }),
+    ))?;
+    let hits = rt.block_on(dispatch_runner(&retrieve, &up))?;
+    assert_eq!(hits["hits"][0]["title"], "beta");
+    assert_eq!(hits["hits"].as_array().map(Vec::len), Some(1));
+    for bad in [
+        json!({ "model": "m", "query": "q", "k": 0 }),
+        json!({ "model": "bad model", "query": "q" }),
+        json!({ "model": "m" }),
+    ] {
+        let h = Handoff::from_json(&handoff("neural.retrieve.lesson", 3, bad))?;
+        assert!(matches!(
+            rt.block_on(dispatch_runner(&h, &up)),
+            Err(VanguardError::BadPayload(_))
+        ));
+    }
     Ok(())
 }

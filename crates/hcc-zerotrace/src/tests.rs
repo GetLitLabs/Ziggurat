@@ -287,3 +287,49 @@ fn labels_come_from_the_allow_list() -> TestResult {
     drop(keyring);
     Ok(())
 }
+
+#[test]
+fn create_recorded_chains_a_stratum_row_and_lists_without_keys() -> TestResult {
+    let scratch = Scratch::new("recorded")?;
+    let rmk = RootMasterKey::generate()?;
+    {
+        let mut keyring = Keyring::open(&scratch.vault())?;
+        assert!(matches!(
+            keyring.create_recorded(&rmk, "lessons.v1", &[7u8; 32]),
+            Err(ZeroTraceError::NoGenesis)
+        ));
+        assert!(keyring.list()?.is_empty(), "refused create leaves no row");
+    }
+    let pubkey = genesis(&scratch.vault())?;
+    let mut keyring = Keyring::open(&scratch.vault())?;
+    assert!(matches!(
+        keyring.create_recorded(&rmk, "bad label", &pubkey),
+        Err(ZeroTraceError::BadLabel)
+    ));
+    let created = keyring.create_recorded(&rmk, "lessons.v1", &pubkey)?;
+    assert_eq!(created.stele_id, 2);
+    assert_eq!(
+        envelope_fingerprint(&keyring.envelope(&created.key_id)?),
+        created.envelope_blake3
+    );
+    let stele = Stele::open(&scratch.vault())?;
+    let row = stele.row(2)?.ok_or("no stratum row")?;
+    assert_eq!(row.module_namespace, STRATUM_NAMESPACE);
+    assert_eq!(
+        row.payload,
+        stratum_payload(&created.key_id, "lessons.v1", &created.envelope_blake3)
+    );
+    assert_eq!(stele.verify_chain()?, 2);
+
+    let cert = keyring.destroy(&created.key_id, &pubkey)?;
+    let listed = keyring.list()?;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].key_id, created.key_id);
+    assert_eq!(listed[0].envelope_blake3, created.envelope_blake3);
+    assert!(matches!(
+        &listed[0].status,
+        KeyStatus::Destroyed { certificate_stele_id, .. } if *certificate_stele_id == cert.stele_id
+    ));
+    drop((stele, keyring));
+    Ok(())
+}

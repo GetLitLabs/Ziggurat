@@ -13,20 +13,19 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene`, `seed <blueprint.json>`, `gates [--only N,N]` (M11 audit, INDEX §14), `freeze-vendor [--undo]`, `modelfile --from <base>`, `charter-version` |
 | `crates/hcc-seal/src/baked.rs` | Length + digest baked; **no royal seal yet**, so the charter stays Unsealed |
 | `hcc-iedb-stele` | Append-only hash-chained stele in SQLite WAL; abort triggers; genesis embeds the charter; M07 charter lineage (`record_charter_version`, `lineage`) |
-| `hcc-krypt` | RMK → KEK (BLAKE3 `derive_key`, context `HCC-KRYPT-STRATUM-v2`) → DEK (ChaCha20-Poly1305 wrap) → FEK (wrapped under DEK; AES-256-GCM data); random nonces; zeroize on drop. Not wired into the daemon yet |
-| `hcc-neural` | M01 Neural Highway: `vault.store.lesson` appends a lesson plus an `HCC-LESSON-v1` stele row (hashes only); `neural.index.upsert` stores per-model f32 vectors from the runner's `/api/embed` on 127.0.0.1:11434; `neural.retrieve.lesson` is exact brute-force cosine top-k. Runner down is a typed error. Not wired into the daemon or Vanguard yet; lesson text is not encrypted yet |
-| `hcc-zerotrace` | M08 Zero-Trace: `hcc_krypt_keyring` in the vault file holds wrapped envelopes only; `Keyring::destroy` crypto-shreds one key (secure_delete, then WAL TRUNCATE) and appends an `HCC-ZEROTRACE-v1` deletion certificate to the stele in the same transaction. Scope is this vault file; no claims about flash wear-levelling. Not wired into the daemon or Vanguard yet |
+| `hcc-krypt` | RMK → KEK (BLAKE3 `derive_key`, context `HCC-KRYPT-STRATUM-v2`) → DEK (ChaCha20-Poly1305 wrap) → FEK (wrapped under DEK; AES-256-GCM data); random nonces; zeroize on drop. Reached through the `krypt.*` Vanguard jobs; the RMK is the operator file `keys/krypt.rmk` (`xtask krypt-rmk`) |
+| `hcc-neural` | M01 Neural Highway: `vault.store.lesson` appends a lesson plus an `HCC-LESSON-v1` stele row (hashes only); `neural.index.upsert` stores per-model f32 vectors from the runner's `/api/embed` on 127.0.0.1:11434; `neural.retrieve.lesson` is exact brute-force cosine top-k. Runner down is a typed error. Live as Vanguard jobs `vault.store.lesson`, `neural.index.upsert`, `neural.retrieve.lesson`; lesson text is not encrypted yet |
+| `hcc-zerotrace` | M08 Zero-Trace: `hcc_krypt_keyring` in the vault file holds wrapped envelopes only; `Keyring::destroy` crypto-shreds one key (secure_delete, then WAL TRUNCATE) and appends an `HCC-ZEROTRACE-v1` deletion certificate to the stele in the same transaction. Scope is this vault file; no claims about flash wear-levelling. Live as Vanguard jobs `krypt.stratum.init` (key + `HCC-KRYPT-STRATUM-v1` row), `zerotrace.key.destroy` and `krypt.death.keyDestroy` |
 | `hcc-baton` | `hcc_baton_trace_ledger`: frozen envelope, hash-chained traces, record + replay, abort triggers |
-| `hcc-vanguard` | 35-entry job table with JSON handoff; `scribe.stele.append`, `seed.scaffold.emit` and `inspect.gate.validate` live; the rest `Err(Unimplemented)` |
+| `hcc-vanguard` | 35-entry job table with JSON handoff; 12 live jobs (INDEX §11) run real code, each with an executor (`ledger` or `runner`); the rest `Err(Unimplemented)` |
 | `hcc-seed` | M05 Code A Seed: validated blueprint JSON → `crates/<name>` (Cargo.toml, lib, schema tests, WAL); deterministic; adds the workspace member; `cargo check --offline`, rolled back on failure; never overwrites |
-| `hcc-wasi-healer` | M04: wasmi 2 (pure Rust interpreter) sandbox with a 10M fuel cap, 16 MiB memory cap, one instance and zero host imports (any import, WASI `path_open` included, is refused before instantiation). `diagnose` runs the start section and `_start`, then reports exported memories and fuel used. `fixtures/healer_empty.wasm` is the 8-byte empty module. Not wired into Vanguard or the daemon; `healer.patch.apply` stays TYPED |
+| `hcc-wasi-healer` | M04: wasmi 2 (pure Rust interpreter) sandbox with a 10M fuel cap, 16 MiB memory cap, one instance and zero host imports (any import, WASI `path_open` included, is refused before instantiation). `diagnose` runs the start section and `_start`, then reports exported memories and fuel used. `fixtures/healer_empty.wasm` is the 8-byte empty module. Live as Vanguard jobs `healer.diagnose.heap` (fixtures only) and `wasi.sandbox.lock`; `healer.patch.apply` stays TYPED |
 | `src-tauri` (`ziggurat-desktop`) | Tauri 2 shell: starts Accordion.be in-process, then shows the cockpit. CSP allows only `'self'` plus `127.0.0.1:7749` and `127.0.0.1:11434`; the window has no Tauri permissions |
-| `origami/dist` | M12 cockpit as plain checked-in HTML, CSS and JS (no npm, no build step): seal badge, T1–T5 rail, module chips, pillar telemetry, dispatch form, last BATON hex and output, 5 s poll, red errors |
+| `origami/dist` | M12 cockpit as plain checked-in HTML, CSS and JS (no npm, no build step): seal badge, T1–T5 rail, module chips, pillar telemetry, dispatch form, Vanguard job panel (table from `GET /v1/ramgenie/jobs`, payload templates, 501 for TYPED shown in red), last BATON hex and output, 5 s poll, red errors |
 | `capsnap` | Demo crate written by `xtask seed blueprints/capsnap.json`; pinned to its blueprint by a drift test |
-| `hcc-daemon` | Loopback-only on 127.0.0.1:7749: `GET /v1/ziggurat/pillar/{module_id}/status` and `POST /v1/ramgenie/dispatch`; opens the stele and BATON ledger on a sealed boot |
+| `hcc-daemon` | Loopback-only on 127.0.0.1:7749: `GET /v1/ziggurat/pillar/{module_id}/status` and `POST /v1/ramgenie/dispatch`, `POST /v1/ramgenie/vanguard` (every successful job is BATON-traced), `GET /v1/ramgenie/jobs`; opens the stele and BATON ledger on a sealed boot; loads the Krypt RMK if present |
 
-Krypt and Vanguard are not wired into the daemon. Nothing here is operations-ready until
-`cargo test --workspace` passes on the operator machine.
+Nothing here is operations-ready until `cargo test --workspace` passes on the operator machine.
 
 ## Nine gates (M11)
 
@@ -66,7 +65,7 @@ cargo run -p ziggurat-desktop                 # debug build, opens the cockpit w
 cargo build --release -p ziggurat-desktop     # target/release/ziggurat-desktop(.exe)
 ```
 
-The app boots the same daemon as `hcc-daemon` (same charter check, same stele, same flags `--charter` and `--db`).
+The app boots the same daemon as `hcc-daemon` (same charter check, same stele, same flags `--charter`, `--db`, `--rmk` and `--workspace`).
 If a standalone `hcc-daemon` already holds 127.0.0.1:7749, the app logs that and the cockpit talks to it.
 Windows needs the WebView2 runtime (built into Windows 10 and 11) and the MSVC build tools; Linux needs
 WebKitGTK 4.1 development packages. The cockpit reads only the daemon's replies: an unsealed charter shows a red
@@ -129,7 +128,7 @@ ziggurat/
 │   ├── hcc-baton/                  # T2 trace record + replay
 │   ├── hcc-seed/                   # T2 writes real crate files
 │   ├── hcc-wasi-healer/            # T2 fuel sandbox + fixture runner
-│   ├── hcc-vanguard/               # T2 job table; 3 live, rest Err
+│   ├── hcc-vanguard/               # T2 job table; live jobs run, TYPED return Err
 │   ├── hcc-neural/                 # T2 M01 lessons + loopback embeddings + cosine retrieve
 │   └── hcc-xtask/                  # T2 seal-charter, freeze-vendor, gates
 ├── src-tauri/                      # Faraday frame; hosts daemon task
@@ -144,7 +143,7 @@ ziggurat/
 ## Run the daemon
 
 ```bash
-cargo run -p hcc-daemon            # from the workspace root; --charter <path>, --db <path> to override
+cargo run -p hcc-daemon            # from the workspace root; --charter, --db, --rmk, --workspace <path> to override
 curl -s http://127.0.0.1:7749/v1/ziggurat/pillar/M09-RamGenie/status
 ```
 
@@ -193,6 +192,21 @@ system message. On success the daemon records a BATON trace, appends a `genie.di
 stele row that embeds the envelope hex, and returns `DISPATCH_SEALED` with
 `baton_envelope_blake3_hex`, `baton_trace_id`, and `stele_dispatch_row_id`. If the runner is down
 the reply is HTTP 502 and nothing is appended. Error strings: `SPEC/ERRORS.md`.
+
+## Vanguard jobs (through M09)
+
+```bash
+cargo run -p hcc-xtask -- krypt-rmk     # once; keys/krypt.rmk (32 random bytes, never commit, back it up privately)
+curl -s http://127.0.0.1:7749/v1/ramgenie/jobs
+curl -s -X POST http://127.0.0.1:7749/v1/ramgenie/vanguard \
+  -H "Content-Type: application/json" \
+  -d '{"job":"krypt.stratum.init","bsmc_namespace":"krypt.stratum.init","terrace_level":1,"payload":{"label":"lessons.v1"}}'
+```
+
+The body is the Vanguard handoff. Same guards as dispatch (loopback, royal seal, open vault). A job that
+succeeds is recorded as one BATON trace and one `HCC-VANGUARD-v1` stele row and returns `JOB_SEALED` with the
+job's `result`; a TYPED job is HTTP 501 and nothing is recorded. Payloads per job: INDEX.md §11. In PowerShell
+use `curl.exe` and put the JSON in a file (`-d "@job.json"`).
 
 ### The `ziggurat:1.0.0` model (optional)
 

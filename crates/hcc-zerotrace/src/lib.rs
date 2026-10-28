@@ -31,6 +31,8 @@ pub const ZEROTRACE_DOMAIN: &[u8; 17] = b"HCC-ZEROTRACE-v1\x00";
 /// Namespace of the deletion-certificate stele row.
 pub const CERTIFICATE_NAMESPACE: &str = "zerotrace.key.destroy";
 pub const LABEL_MAX: usize = 64;
+/// Namespace of the stele row that records a new key (`krypt.stratum.init`).
+pub const STRATUM_NAMESPACE: &str = "krypt.stratum.init";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS hcc_krypt_keyring (
@@ -277,6 +279,50 @@ fn decode(key_id: &str, raw: RawEnvelope) -> Result<Entry, ZeroTraceError> {
     })
 }
 
+/// Refuse unless stele row 1 is the genesis row: keys are born and shredded on a ledger.
+fn require_genesis(tx: &rusqlite::Transaction<'_>) -> Result<(), ZeroTraceError> {
+    let genesis: Option<(Vec<u8>, String)> = tx
+        .query_row(
+            "SELECT prev_digest, module_namespace FROM hcc_precedent_stele
+             ORDER BY stele_id ASC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    match genesis {
+        Some((prev, ns)) if prev == GENESIS_PREV_DIGEST && ns == GENESIS_NAMESPACE => Ok(()),
+        _ => Err(ZeroTraceError::NoGenesis),
+    }
+}
+
+/// Canonical `krypt.stratum.init` stele payload. Hashes and allow-listed text only.
+pub fn stratum_payload(key_id: &str, label: &str, fingerprint: &Digest) -> Vec<u8> {
+    format!(
+        "HCC-KRYPT-STRATUM-v1\nkey_id={key_id}\nlabel={label}\nenvelope_blake3_hex={}\n",
+        digest_hex(fingerprint)
+    )
+    .into_bytes()
+}
+
+/// A key created on the ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatedKey {
+    pub key_id: String,
+    pub label: String,
+    pub envelope_blake3: Digest,
+    pub stele_id: i64,
+}
+
+/// One keyring row as listed: never any key material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyEntry {
+    pub key_id: String,
+    pub label: String,
+    pub envelope_blake3: Digest,
+    pub created_at_utc: String,
+    pub status: KeyStatus,
+}
+
 /// The keyring table in a vault file, on its own `secure_delete` connection.
 pub struct Keyring {
     conn: Connection,
@@ -286,6 +332,7 @@ impl Keyring {
     /// Open the keyring inside the vault file at `path` (the same file as the stele).
     pub fn open(path: &Path) -> Result<Self, ZeroTraceError> {
         let conn = Connection::open(path)?;
+        conn.busy_timeout(hcc_iedb_stele::BUSY_TIMEOUT)?;
         let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
         let secure: i64 = conn.query_row("PRAGMA secure_delete = ON", [], |r| r.get(0))?;
         if secure != 1 {
@@ -323,6 +370,91 @@ impl Keyring {
             ],
         )?;
         Ok(key_id)
+    }
+
+    /// `krypt.stratum.init` on the ledger: the keyring row and an `HCC-KRYPT-STRATUM-v1` stele
+    /// row (key id, label, envelope fingerprint; never a key) commit in one IMMEDIATE transaction.
+    /// Refused unless stele row 1 is genesis, like a certificate.
+    pub fn create_recorded(
+        &mut self,
+        rmk: &RootMasterKey,
+        label: &str,
+        ed25519_pubkey: &[u8; 32],
+    ) -> Result<CreatedKey, ZeroTraceError> {
+        if !label_ok(label) {
+            return Err(ZeroTraceError::BadLabel);
+        }
+        let envelope = init_stratum(rmk).map_err(ZeroTraceError::Krypt)?;
+        let fingerprint = envelope_fingerprint(&envelope);
+        let key_id = key_id_for(&fingerprint);
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        require_genesis(&tx)?;
+        tx.execute(
+            "INSERT INTO hcc_krypt_keyring
+               (key_id, label, envelope_blake3, salt, dek_nonce, wrapped_dek, fek_nonce, wrapped_fek)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                key_id,
+                label,
+                &fingerprint[..],
+                &envelope.salt[..],
+                &envelope.wrapped_dek.nonce[..],
+                envelope.wrapped_dek.ciphertext,
+                &envelope.wrapped_fek.nonce[..],
+                envelope.wrapped_fek.ciphertext,
+            ],
+        )?;
+        let payload = stratum_payload(&key_id, label, &fingerprint);
+        let stele_id = append_in(&tx, STRATUM_NAMESPACE, &payload, ed25519_pubkey, None)
+            .map_err(ZeroTraceError::Stele)?;
+        tx.commit()?;
+        Ok(CreatedKey {
+            key_id,
+            label: label.to_owned(),
+            envelope_blake3: fingerprint,
+            stele_id,
+        })
+    }
+
+    /// Every keyring row, oldest first: id, label, fingerprint and whether it was shredded.
+    pub fn list(&self) -> Result<Vec<KeyEntry>, ZeroTraceError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT key_id, label, envelope_blake3, created_at_utc, destroyed_at_utc,
+                    certificate_stele_id
+               FROM hcc_krypt_keyring ORDER BY created_at_utc ASC, key_id ASC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Vec<u8>>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<i64>>(5)?,
+            ))
+        })?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let (key_id, label, fp, created_at_utc, destroyed_at_utc, certificate) = row?;
+            let envelope_blake3 = fixed::<32>(&key_id, "envelope_blake3", Some(fp))?;
+            let status = match (destroyed_at_utc, certificate) {
+                (Some(destroyed_at_utc), Some(certificate_stele_id)) => KeyStatus::Destroyed {
+                    destroyed_at_utc,
+                    certificate_stele_id,
+                },
+                _ => KeyStatus::Live,
+            };
+            entries.push(KeyEntry {
+                key_id,
+                label,
+                envelope_blake3,
+                created_at_utc,
+                status,
+            });
+        }
+        Ok(entries)
     }
 
     fn entry(conn: &Connection, key_id: &str) -> Result<Entry, ZeroTraceError> {
@@ -396,18 +528,7 @@ impl Keyring {
                 })
             }
         };
-        let genesis: Option<(Vec<u8>, String)> = tx
-            .query_row(
-                "SELECT prev_digest, module_namespace FROM hcc_precedent_stele
-                 ORDER BY stele_id ASC LIMIT 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        match genesis {
-            Some((prev, ns)) if prev == GENESIS_PREV_DIGEST && ns == GENESIS_NAMESPACE => {}
-            _ => return Err(ZeroTraceError::NoGenesis),
-        }
+        require_genesis(&tx)?;
         let payload = certificate_payload(key_id, &label, &fingerprint);
         let stele_id = append_in(&tx, CERTIFICATE_NAMESPACE, &payload, ed25519_pubkey, None)
             .map_err(ZeroTraceError::Stele)?;

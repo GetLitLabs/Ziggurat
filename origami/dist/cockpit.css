@@ -106,3 +106,5 @@ button[type="submit"]:disabled { background: var(--line); color: var(--muted); c
 .hex { display: block; overflow-wrap: anywhere; color: var(--gold); margin-bottom: 10px; }
 .hex[data-empty="true"], .output[data-empty="true"] { color: var(--muted); font-family: var(--sans); }
 .output { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.job-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) minmax(0, 1fr); gap: 0 12px; }
+#job-payload { font-family: var(--mono); font-size: 12px; }
