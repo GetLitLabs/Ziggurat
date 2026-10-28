@@ -52,6 +52,7 @@ Body is `{"error": "<value>"}`. Nothing is appended to BATON or the stele on any
 | `runner response has no message.content` | 502 | runner reply is not Ollama `/api/chat` JSON |
 | `ledger lock poisoned` | 500 | an earlier panic poisoned the ledger lock |
 | `ledger append failed` | 500 | SQLite refused the BATON or stele append, including a vault still locked by another connection after the 5 s busy timeout (detail in the daemon log) |
+| `request from a non-cockpit origin refused` | 403 | a non-GET request carries an `Origin` header that is not one of the cockpit's Tauri origins (any route; requests with no `Origin`, such as curl, pass) |
 
 ## `POST /v1/ramgenie/vanguard` errors
 
@@ -60,7 +61,7 @@ Body is `{"error": "<value>"}`. A refused or failed job appends nothing to BATON
 The guards share the dispatch strings above: `non-loopback peer refused` (403),
 `dispatch body exceeds 1048576 bytes` (413), `charter not royal-sealed; dispatch forbidden` (403),
 `stele or BATON ledger not open; dispatch held` (503), `ledger lock poisoned` and
-`ledger append failed` (500). Two strings are the route's own:
+`ledger append failed` (500), `request from a non-cockpit origin refused` (403). Two strings are the route's own:
 
 | Value | HTTP | When |
 |---|---|---|

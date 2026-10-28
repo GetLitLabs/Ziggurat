@@ -405,7 +405,12 @@ async fn daemon_health(
             format!("non-loopback peer {peer} refused"),
         ));
     }
-    let heads = state.ledgers.as_ref().and_then(ledger_heads);
+    // Read on a blocking thread: a long ledger job may hold the vault lock.
+    let reader = Arc::clone(&state);
+    let heads = tokio::task::spawn_blocking(move || reader.ledgers.as_ref().and_then(ledger_heads))
+        .await
+        .ok()
+        .flatten();
     let (stele_rows, stele_head, trace) = match heads {
         Some(h) => (Some(h.stele_rows), h.stele_head_hex, h.trace),
         None => (None, None, None),
@@ -542,8 +547,9 @@ pub mod dispatch_error {
     pub const NO_LEDGER: &str = "stele or BATON ledger not open; dispatch held";
     pub const LEDGER_LOCK: &str = "ledger lock poisoned";
     pub const LEDGER_WRITE: &str = "ledger append failed";
+    pub const FOREIGN_ORIGIN: &str = "request from a non-cockpit origin refused";
 
-    pub const ALL: [&str; 11] = [
+    pub const ALL: [&str; 12] = [
         NON_LOOPBACK,
         TOO_LARGE,
         BAD_JSON,
@@ -555,6 +561,7 @@ pub mod dispatch_error {
         NO_LEDGER,
         LEDGER_LOCK,
         LEDGER_WRITE,
+        FOREIGN_ORIGIN,
     ];
 }
 
@@ -616,7 +623,7 @@ async fn ramgenie_dispatch(
 }
 
 async fn dispatch_sealed(
-    state: &AccordionSwitchboardState,
+    state: &Arc<AccordionSwitchboardState>,
     peer: SocketAddr,
     body: Result<Bytes, BytesRejection>,
 ) -> Reply<DispatchSealed> {
@@ -646,9 +653,9 @@ async fn dispatch_sealed(
     let CharterStatus::Sealed(charter) = &state.charter else {
         return Err(refuse(StatusCode::FORBIDDEN, e::UNSEALED.into()));
     };
-    let Some(ledgers) = &state.ledgers else {
+    if state.ledgers.is_none() {
         return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, e::NO_LEDGER.into()));
-    };
+    }
 
     let output = ramgenie::generate(
         state.runner_addr,
@@ -660,38 +667,54 @@ async fn dispatch_sealed(
     .await
     .map_err(|err| refuse(StatusCode::BAD_GATEWAY, err.message()))?;
 
-    let mut ledgers = ledgers
-        .lock()
-        .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_LOCK.into()))?;
-    let write_failed = |detail: String| {
-        eprintln!("hcc-daemon: {}: {detail}", e::LEDGER_WRITE);
-        refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_WRITE.into())
-    };
-    // The BATON trace and its stele row commit in one transaction on the vault file:
-    // both land or neither does.
-    let pubkey = ledgers.operator_pubkey;
+    let holder = Arc::clone(state);
+    let charter_digest = *charter.digest();
+    let namespace_text = namespace.as_str().to_owned();
+    let prompt = request.operator_prompt.clone();
     let model = request.model.clone();
-    let (trace, stele_id) = ledgers
-        .baton
-        .record_then(
-            charter.digest(),
-            namespace.as_str(),
-            terrace,
-            request.operator_prompt.as_bytes(),
-            output.as_bytes(),
-            |tx, trace| {
-                let payload = dispatch_payload(
-                    &model,
-                    namespace.as_str(),
-                    terrace,
-                    trace.trace_id,
-                    &digest_hex(&trace.envelope),
-                );
-                hcc_iedb_stele::append_in(tx, "genie.dispatch.local", &payload, &pubkey, None)
-                    .map_err(|err| LedgerWrite(err.to_string()))
-            },
-        )
-        .map_err(|LedgerWrite(detail)| write_failed(detail))?;
+    let response = output.clone();
+    // The ledger write runs on a blocking thread so a long job holding the lock never
+    // parks a tokio worker.
+    let written = tokio::task::spawn_blocking(move || {
+        let ledgers = holder
+            .ledgers
+            .as_ref()
+            .ok_or_else(|| refuse(StatusCode::SERVICE_UNAVAILABLE, e::NO_LEDGER.into()))?;
+        let mut ledgers = ledgers
+            .lock()
+            .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_LOCK.into()))?;
+        let write_failed = |detail: String| {
+            eprintln!("hcc-daemon: {}: {detail}", e::LEDGER_WRITE);
+            refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_WRITE.into())
+        };
+        // The BATON trace and its stele row commit in one transaction on the vault file:
+        // both land or neither does.
+        let pubkey = ledgers.operator_pubkey;
+        ledgers
+            .baton
+            .record_then(
+                &charter_digest,
+                &namespace_text,
+                terrace,
+                prompt.as_bytes(),
+                response.as_bytes(),
+                |tx, trace| {
+                    let payload = dispatch_payload(
+                        &model,
+                        &namespace_text,
+                        terrace,
+                        trace.trace_id,
+                        &digest_hex(&trace.envelope),
+                    );
+                    hcc_iedb_stele::append_in(tx, "genie.dispatch.local", &payload, &pubkey, None)
+                        .map_err(|err| LedgerWrite(err.to_string()))
+                },
+            )
+            .map_err(|LedgerWrite(detail)| write_failed(detail))
+    })
+    .await
+    .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_LOCK.into()))?;
+    let (trace, stele_id) = written?;
     let envelope_hex = digest_hex(&trace.envelope);
 
     Ok(Json(DispatchSealed {
@@ -716,8 +739,10 @@ impl From<hcc_baton::BatonError> for LedgerWrite {
 }
 
 /// Origins of the Tauri webview that hosts the origami cockpit (Linux/macOS, then Windows).
-/// Only these get CORS headers; every other origin is served without them, so a browser
-/// page elsewhere cannot read the daemon's replies.
+/// Only these get CORS headers, so a browser page elsewhere cannot read the daemon's
+/// replies. A request that carries any other `Origin` and is not a GET is refused before
+/// it reaches a handler: a page cannot make the operator's browser run a job or dispatch
+/// with a "simple" (text/plain) POST. Requests with no `Origin` (curl, the CLI) pass.
 pub const COCKPIT_ORIGINS: [&str; 3] = [
     "tauri://localhost",
     "http://tauri.localhost",
@@ -731,11 +756,14 @@ async fn cockpit_cors(request: Request, next: Next) -> Response {
         .and_then(|o| o.to_str().ok())
         .filter(|o| COCKPIT_ORIGINS.contains(o))
         .map(str::to_owned);
+    let foreign = request.headers().contains_key(header::ORIGIN) && origin.is_none();
     let mut response = if request.method() == Method::OPTIONS {
         match origin {
             Some(_) => StatusCode::NO_CONTENT.into_response(),
             None => StatusCode::FORBIDDEN.into_response(),
         }
+    } else if foreign && request.method() != Method::GET {
+        refuse(StatusCode::FORBIDDEN, dispatch_error::FOREIGN_ORIGIN.into()).into_response()
     } else {
         next.run(request).await
     };

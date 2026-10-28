@@ -489,3 +489,88 @@ fn job_strings_are_documented() -> TestResult {
     assert!(doc.contains("`POST /v1/ramgenie/vanguard` errors"));
     Ok(())
 }
+
+async fn send_from(
+    state: &Arc<AccordionSwitchboardState>,
+    origin: &str,
+    content_type: &str,
+    body: &str,
+) -> Result<(StatusCode, Value), Box<dyn std::error::Error>> {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/ramgenie/vanguard")
+        .header("content-type", content_type)
+        .header("origin", origin)
+        .extension(ConnectInfo(loopback()))
+        .body(Body::from(body.to_string()))?;
+    let response = router(Arc::clone(state)).oneshot(request).await?;
+    let code = response.status();
+    let bytes = to_bytes(response.into_body(), 1 << 22).await?;
+    Ok((code, serde_json::from_slice(&bytes)?))
+}
+
+#[tokio::test]
+async fn foreign_origin_posts_are_refused_before_any_job_runs() -> TestResult {
+    let scratch = Scratch::new("origin")?;
+    let state = sealed_state(&scratch.db(), dead_port().await?, None);
+    let body = handoff(
+        "scribe.stele.append",
+        1,
+        json!({ "text": "from a web page" }),
+    );
+    for origin in ["https://evil.example", "null", "http://127.0.0.1:8080"] {
+        let (code, reply) = send_from(&state, origin, "text/plain", &body).await?;
+        assert_eq!(code, StatusCode::FORBIDDEN, "{origin}");
+        assert_eq!(reply["error"], dispatch_error::FOREIGN_ORIGIN);
+    }
+    let dispatch = json!({ "model": "m", "bsmc_namespace": "a.b", "terrace_level": 1,
+        "operator_prompt": "x" })
+    .to_string();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/ramgenie/dispatch")
+        .header("content-type", "text/plain")
+        .header("origin", "https://evil.example")
+        .extension(ConnectInfo(loopback()))
+        .body(Body::from(dispatch))?;
+    let response = router(Arc::clone(&state)).oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        Stele::open(&scratch.db())?.verify_chain()?,
+        1,
+        "genesis only"
+    );
+
+    // A foreign page may still GET (it just cannot read the reply: no CORS headers).
+    let (code, _) = send(&state, loopback(), "GET", "/v1/ramgenie/jobs", "").await?;
+    assert_eq!(code, StatusCode::OK);
+    // The cockpit's own origin runs the job.
+    let (code, reply) =
+        send_from(&state, "http://tauri.localhost", "application/json", &body).await?;
+    assert_eq!(code, StatusCode::OK, "{reply}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_deterministic_job_repeats_with_a_new_trace_each_time() -> TestResult {
+    let scratch = Scratch::new("repeat")?;
+    let state = sealed_state(&scratch.db(), dead_port().await?, None);
+    let body = handoff("wasi.sandbox.lock", 2, json!({}));
+    let (code, first) = job(&state, &body).await?;
+    assert_eq!(code, StatusCode::OK, "{first}");
+    assert_eq!(first["result"]["baton_prev_envelope_hex"], Value::Null);
+    let (code, second) = job(&state, &body).await?;
+    assert_eq!(code, StatusCode::OK, "{second}");
+    assert_eq!(second["baton_trace_id"], 2);
+    assert_ne!(
+        first["baton_envelope_blake3_hex"],
+        second["baton_envelope_blake3_hex"]
+    );
+    assert_eq!(
+        second["result"]["baton_prev_envelope_hex"],
+        first["baton_envelope_blake3_hex"]
+    );
+    let baton = hcc_baton::BatonLedger::open(&scratch.db())?;
+    assert_eq!(baton.replay(&charter_digest(CHARTER))?, 2);
+    Ok(())
+}

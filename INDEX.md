@@ -378,8 +378,10 @@ received, response = the result JSON bytes returned, namespace and terrace from 
 `genie.dispatch.local` stele row `HCC-VANGUARD-v1\njob=…\nbsmc_namespace=…\nterrace_level=…\nbaton_trace_id=…\nbaton_envelope_hex=…\nresult_blake3_hex=…\n`,
 in one transaction. The reply is `{status: "JOB_SEALED", job, bsmc_namespace, terrace_level, charter_blake3_hex,
 baton_envelope_blake3_hex, baton_trace_id, stele_job_row_id, result_blake3_hex, result}`. A refused or failed job
-records nothing (errors and HTTP codes: `SPEC/ERRORS.md`). `GET /v1/ramgenie/jobs` serves the table with status
-and executor. The cockpit's Vanguard panel posts to the same route.
+records nothing (errors and HTTP codes: `SPEC/ERRORS.md`). The daemon adds `baton_prev_envelope_hex` (the BATON
+head the job was recorded after, `null` for the first trace) to every result, so a job run twice with the same
+input gets two distinct traces. Ledger jobs run and are recorded under one hold of the vault lock on a blocking
+thread. `GET /v1/ramgenie/jobs` serves the table with status and executor. The cockpit's Vanguard panel posts to the same route.
 
 `inspect.gate.validate` payload: `{ "gates": [1..=11, ...] }` (default: all of §14). It runs the same checks as
 `scripts/nine_gates_audit.sh` (a thin wrapper over `cargo run -p hcc-xtask -- gates`, so Windows runs the

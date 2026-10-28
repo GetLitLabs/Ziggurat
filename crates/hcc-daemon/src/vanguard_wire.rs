@@ -2,9 +2,10 @@
 //!
 //! The body is the Vanguard JSON handoff `{job, bsmc_namespace, terrace_level, payload}`.
 //! Guards match `/v1/ramgenie/dispatch`: loopback peer, royal-sealed charter, open ledgers.
-//! Ledger jobs run on a blocking thread with the vault lock held; runner jobs wait on
-//! 127.0.0.1:11434 without it. Every job that succeeds is then recorded as one BATON trace
-//! (prompt = the handoff bytes as received, response = the result bytes returned) and one
+//! Ledger jobs run on a blocking thread and are recorded under the same hold of the vault
+//! lock; runner jobs wait on 127.0.0.1:11434 without it, then take it to record. Every job
+//! that succeeds is recorded as one BATON trace (prompt = the handoff bytes as received,
+//! response = the result bytes returned, which name the prior BATON head) and one
 //! `HCC-VANGUARD-v1` stele row, in one transaction. A refused or failed job records nothing.
 
 use std::net::SocketAddr;
@@ -24,7 +25,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
-    dispatch_error, refuse, AccordionSwitchboardState, CharterStatus, ErrorBody, LedgerWrite, Reply,
+    dispatch_error, refuse, AccordionSwitchboardState, CharterStatus, ErrorBody, LedgerWrite,
+    Ledgers, Reply,
 };
 
 /// Job refusals that are fixed strings (listed in `SPEC/ERRORS.md`). Everything else a job
@@ -182,50 +184,70 @@ async fn job_sealed(
         ));
     };
 
-    let result = match exec {
+    let charter = Arc::clone(charter);
+    match exec {
+        // The job and its receipt run under one hold of the vault lock, so no other
+        // dispatch can land between the job's effects and its BATON trace.
         Exec::Ledger => {
-            let state = Arc::clone(state);
-            let charter = Arc::clone(charter);
-            let handoff = handoff.clone();
-            tokio::task::spawn_blocking(move || run_ledger_job(&state, &charter, &handoff))
-                .await
-                .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_LOCK.into()))??
+            on_ledgers(state, move |state, ledgers| {
+                let result = run_ledger_job(state, ledgers, &charter, &handoff)?;
+                record(ledgers, &charter, &handoff, terrace, &body, result)
+            })
+            .await
         }
         Exec::Runner => {
             let ctx = RunnerContext {
-                charter,
+                charter: &charter,
                 vault_path: &vault_path,
                 runner_addr: state.runner_addr,
                 timeout: crate::ramgenie::RUNNER_TIMEOUT,
             };
-            hcc_vanguard::dispatch_runner(&handoff, &ctx)
+            let result = hcc_vanguard::dispatch_runner(&handoff, &ctx)
                 .await
-                .map_err(|err| refuse_job(&err))?
+                .map_err(|err| refuse_job(&err))?;
+            on_ledgers(state, move |_, ledgers| {
+                record(ledgers, &charter, &handoff, terrace, &body, result)
+            })
+            .await
         }
-        Exec::Daemon => {
-            return Err(refuse_job(&VanguardError::Unwired {
-                job: checked.job.name,
-                needs: "a daemon handler",
-            }))
-        }
-    };
-    record(state, charter, &handoff, terrace, &body, result)
+        Exec::Daemon => Err(refuse_job(&VanguardError::Unwired {
+            job: checked.job.name,
+            needs: "a daemon handler",
+        })),
+    }
 }
 
-/// Run a ledger job with the vault lock held for its whole duration.
+/// Run `work` on a blocking thread with the vault lock held, so a long job (a cargo
+/// build, a gate run) never parks a tokio worker on the mutex.
+async fn on_ledgers<T: Send + 'static>(
+    state: &Arc<AccordionSwitchboardState>,
+    work: impl FnOnce(&AccordionSwitchboardState, &mut Ledgers) -> Result<T, (StatusCode, Json<ErrorBody>)>
+        + Send
+        + 'static,
+) -> Result<T, (StatusCode, Json<ErrorBody>)> {
+    use dispatch_error as e;
+    let state = Arc::clone(state);
+    tokio::task::spawn_blocking(move || {
+        let ledgers = state
+            .ledgers
+            .as_ref()
+            .ok_or_else(|| refuse(StatusCode::SERVICE_UNAVAILABLE, e::NO_LEDGER.into()))?;
+        let mut ledgers = ledgers
+            .lock()
+            .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_LOCK.into()))?;
+        work(&state, &mut ledgers)
+    })
+    .await
+    .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_LOCK.into()))?
+}
+
+/// Run a ledger job on the locked ledgers.
 fn run_ledger_job(
     state: &AccordionSwitchboardState,
+    ledgers: &mut Ledgers,
     charter: &SystemCharter<RoyalSealed>,
     handoff: &Handoff,
 ) -> Result<Value, (StatusCode, Json<ErrorBody>)> {
-    use dispatch_error as e;
-    let ledgers = state
-        .ledgers
-        .as_ref()
-        .ok_or_else(|| refuse(StatusCode::SERVICE_UNAVAILABLE, e::NO_LEDGER.into()))?;
-    let mut ledgers = ledgers
-        .lock()
-        .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_LOCK.into()))?;
     let royal = ledgers.royal;
     let factory = &state.factory;
     let mut ctx = VanguardContext {
@@ -255,26 +277,45 @@ pub fn job_payload(
     .into_bytes()
 }
 
-/// BATON trace + `HCC-VANGUARD-v1` stele row for a job that already succeeded.
+/// Result key that names the BATON head this job was recorded after (`null` for the
+/// first trace). It makes every receipt's response bytes unique, so a deterministic job
+/// run twice gets two traces instead of a duplicate-envelope refusal.
+pub const PREV_ENVELOPE_KEY: &str = "baton_prev_envelope_hex";
+
+/// BATON trace + `HCC-VANGUARD-v1` stele row for a job that already succeeded. The caller
+/// holds the vault lock, so the head read here is still the head when the trace lands.
 fn record(
-    state: &AccordionSwitchboardState,
+    ledgers: &mut Ledgers,
     charter: &SystemCharter<RoyalSealed>,
     handoff: &Handoff,
     terrace: TerraceLevel,
     handoff_bytes: &[u8],
-    result: Value,
+    mut result: Value,
 ) -> Reply<JobSealed> {
     use dispatch_error as e;
+    let write_failed = |detail: String| {
+        // The job's own effects (if any) are already committed; say so in the log.
+        eprintln!(
+            "hcc-daemon: {} after job {} succeeded: {detail}",
+            e::LEDGER_WRITE,
+            handoff.job
+        );
+        refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_WRITE.into())
+    };
+    let prev = ledgers
+        .baton
+        .snapshot_then(|_, head| Ok::<_, LedgerWrite>(head.map(|(_, env)| digest_hex(&env))))
+        .map_err(|LedgerWrite(detail)| write_failed(detail))?;
+    let Value::Object(fields) = &mut result else {
+        return Err(write_failed("job result is not a JSON object".into()));
+    };
+    fields.insert(
+        PREV_ENVELOPE_KEY.into(),
+        prev.map_or(Value::Null, Value::String),
+    );
     let result_bytes = serde_json::to_vec(&result)
         .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_WRITE.into()))?;
     let result_hex = digest_hex(blake3::hash(&result_bytes).as_bytes());
-    let ledgers = state
-        .ledgers
-        .as_ref()
-        .ok_or_else(|| refuse(StatusCode::SERVICE_UNAVAILABLE, e::NO_LEDGER.into()))?;
-    let mut ledgers = ledgers
-        .lock()
-        .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_LOCK.into()))?;
     let pubkey = ledgers.operator_pubkey;
     let (trace, stele_id) = ledgers
         .baton
@@ -297,15 +338,7 @@ fn record(
                     .map_err(|err| LedgerWrite(err.to_string()))
             },
         )
-        .map_err(|LedgerWrite(detail)| {
-            // The job's own effects (if any) are already committed; say so in the log.
-            eprintln!(
-                "hcc-daemon: {} after job {} succeeded: {detail}",
-                e::LEDGER_WRITE,
-                handoff.job
-            );
-            refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_WRITE.into())
-        })?;
+        .map_err(|LedgerWrite(detail)| write_failed(detail))?;
     Ok(Json(JobSealed {
         status: "JOB_SEALED",
         job: handoff.job.clone(),

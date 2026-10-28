@@ -368,30 +368,52 @@ impl LessonStore {
         model: &str,
         vector: &[f32],
     ) -> Result<(), NeuralError> {
+        self.upsert_vectors(model, &[(lesson_id, vector)])
+    }
+
+    /// Set several vectors under one model in one transaction: every vector is checked first,
+    /// and any error writes none of them.
+    pub fn upsert_vectors(
+        &mut self,
+        model: &str,
+        vectors: &[(i64, &[f32])],
+    ) -> Result<(), NeuralError> {
         if !model_ok(model) {
             return Err(NeuralError::BadModel);
         }
-        if !vector_ok(vector) {
+        if vectors.iter().any(|(_, v)| !vector_ok(v)) {
             return Err(NeuralError::BadVector);
         }
-        let lesson = self
-            .lesson(lesson_id)?
-            .ok_or(NeuralError::NoLesson(lesson_id))?;
-        let dim = i64::try_from(vector.len()).map_err(|_| NeuralError::BadVector)?;
-        self.conn.execute(
-            "INSERT INTO hcc_neural_index (lesson_id, model, dim, vector, body_blake3)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT (lesson_id, model) DO UPDATE SET
-               dim = excluded.dim, vector = excluded.vector, body_blake3 = excluded.body_blake3,
-               indexed_at_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
-            params![
-                lesson_id,
-                model,
-                dim,
-                to_blob(vector),
-                &lesson.body_blake3[..]
-            ],
-        )?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for (lesson_id, vector) in vectors {
+            let sql =
+                format!("SELECT {LESSON_COLUMNS} FROM hcc_neural_lesson WHERE lesson_id = ?1");
+            let lesson = match tx
+                .query_row(&sql, params![lesson_id], lesson_row)
+                .optional()?
+            {
+                Some(raw) => decode(raw)?,
+                None => return Err(NeuralError::NoLesson(*lesson_id)),
+            };
+            let dim = i64::try_from(vector.len()).map_err(|_| NeuralError::BadVector)?;
+            tx.execute(
+                "INSERT INTO hcc_neural_index (lesson_id, model, dim, vector, body_blake3)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (lesson_id, model) DO UPDATE SET
+                   dim = excluded.dim, vector = excluded.vector, body_blake3 = excluded.body_blake3,
+                   indexed_at_utc = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+                params![
+                    lesson_id,
+                    model,
+                    dim,
+                    to_blob(vector),
+                    &lesson.body_blake3[..]
+                ],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 

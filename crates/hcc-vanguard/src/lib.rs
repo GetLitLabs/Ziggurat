@@ -712,22 +712,30 @@ async fn neural_index_upsert(
     if pending.is_empty() {
         return Ok(json!({ "model": model, "indexed": 0, "lesson_ids": [] }));
     }
-    let texts: Vec<&str> = pending.iter().map(|l| l.body.as_str()).collect();
-    let vectors = hcc_neural::embed(ctx.runner_addr, model, &texts, ctx.timeout)
-        .await
-        .map_err(|e| VanguardError::Neural(e.into()))?;
-    if vectors.len() != pending.len() {
-        return Err(VanguardError::Neural(NeuralError::EmbedCount {
-            sent: pending.len(),
-            got: vectors.len(),
-        }));
+    // The runner takes at most EMBED_MAX_INPUTS texts per call: embed in bounded batches, keep
+    // every vector in memory, then write them all in one transaction (any error writes none).
+    let mut vectors: Vec<Vec<f32>> = Vec::with_capacity(pending.len());
+    for batch in pending.chunks(hcc_neural::embed::EMBED_MAX_INPUTS) {
+        let texts: Vec<&str> = batch.iter().map(|l| l.body.as_str()).collect();
+        let got = hcc_neural::embed(ctx.runner_addr, model, &texts, ctx.timeout)
+            .await
+            .map_err(|e| VanguardError::Neural(e.into()))?;
+        if got.len() != batch.len() {
+            return Err(VanguardError::Neural(NeuralError::EmbedCount {
+                sent: batch.len(),
+                got: got.len(),
+            }));
+        }
+        vectors.extend(got);
     }
-    let mut store = LessonStore::open(ctx.vault_path).map_err(VanguardError::Neural)?;
-    for (lesson, vector) in pending.iter().zip(&vectors) {
-        store
-            .upsert_vector(lesson.lesson_id, model, vector)
-            .map_err(VanguardError::Neural)?;
-    }
+    let rows: Vec<(i64, &[f32])> = pending
+        .iter()
+        .zip(&vectors)
+        .map(|(lesson, vector)| (lesson.lesson_id, vector.as_slice()))
+        .collect();
+    LessonStore::open(ctx.vault_path)
+        .and_then(|mut store| store.upsert_vectors(model, &rows))
+        .map_err(VanguardError::Neural)?;
     Ok(json!({
         "model": model,
         "indexed": pending.len(),

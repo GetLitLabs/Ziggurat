@@ -70,7 +70,9 @@ If a standalone `hcc-daemon` already holds 127.0.0.1:7749, the app logs that and
 Windows needs the WebView2 runtime (built into Windows 10 and 11) and the MSVC build tools; Linux needs
 WebKitGTK 4.1 development packages. The cockpit reads only the daemon's replies: an unsealed charter shows a red
 UNSEALED badge with its `seal_error` and dispatch stays disabled, and a missing daemon shows DAEMON UNREACHABLE.
-The daemon sends CORS headers only to the Tauri webview origins (`tauri://localhost`, `http(s)://tauri.localhost`).
+The daemon sends CORS headers only to the Tauri webview origins (`tauri://localhost`, `http(s)://tauri.localhost`),
+and refuses any non-GET request whose `Origin` is something else (403), so a web page cannot post a job or a
+dispatch through the operator's browser. Requests without an `Origin` (curl, scripts) are unaffected.
 
 ## Seal ceremony (operator machine)
 

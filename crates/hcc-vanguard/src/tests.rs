@@ -726,3 +726,34 @@ fn neural_jobs_index_then_retrieve_through_the_runner() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn index_upsert_embeds_more_than_one_runner_batch() -> TestResult {
+    let vault = Vault::new("batches")?;
+    let path = vault.path();
+    {
+        let mut store = LessonStore::open(&path)?;
+        for n in 0..300 {
+            store.store(
+                "vault.store.lesson",
+                &format!("l{n}"),
+                &format!("A body {n}"),
+                &[1u8; 32],
+            )?;
+        }
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let ctx = RunnerContext {
+        charter: &vault.charter,
+        vault_path: &path,
+        runner_addr: rt.block_on(fake_embed())?,
+        timeout: Duration::from_secs(10),
+    };
+    let upsert = Handoff::from_json(&handoff("neural.index.upsert", 3, json!({ "model": "m" })))?;
+    let out = rt.block_on(dispatch_runner(&upsert, &ctx))?;
+    assert_eq!(out["indexed"], 300);
+    assert!(LessonStore::open(&path)?.pending("m")?.is_empty());
+    Ok(())
+}
