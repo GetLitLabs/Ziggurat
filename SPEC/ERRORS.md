@@ -61,12 +61,14 @@ Body is `{"error": "<value>"}`. A refused or failed job appends nothing to BATON
 The guards share the dispatch strings above: `non-loopback peer refused` (403),
 `dispatch body exceeds 1048576 bytes` (413), `charter not royal-sealed; dispatch forbidden` (403),
 `stele or BATON ledger not open; dispatch held` (503), `ledger lock poisoned` and
-`ledger append failed` (500), `request from a non-cockpit origin refused` (403). Two strings are the route's own:
+`ledger append failed` (500), `request from a non-cockpit origin refused` (403). Four strings are the route's own:
 
 | Value | HTTP | When |
 |---|---|---|
 | `job body must be JSON {job, bsmc_namespace, terrace_level, payload}` | 400 | malformed JSON, missing or unknown fields |
 | `daemon booted without a vault path; jobs held` | 503 | the daemon state has no vault path (library use without `with_factory`) |
+| `this exact trace is already on the BATON ledger` | 409 | `baton.trace.record` with an input, output, namespace and terrace already recorded |
+| `BATON replay against the charter lineage failed` | 422 | `baton.state.replay` found a trace that does not recompute; continues `: <reason>` |
 
 Every other refusal is the job's own `VanguardError` text, which names the job and the reason.
 The HTTP status follows the error (`hcc_daemon::vanguard_wire::job_status`):

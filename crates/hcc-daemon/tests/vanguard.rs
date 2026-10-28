@@ -574,3 +574,159 @@ async fn a_deterministic_job_repeats_with_a_new_trace_each_time() -> TestResult 
     assert_eq!(baton.replay(&charter_digest(CHARTER))?, 2);
     Ok(())
 }
+
+/// Fake runner `/api/chat`: echoes the system prompt length so the test can see the sealed
+/// charter was injected.
+async fn fake_chat() -> Result<SocketAddr, std::io::Error> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let app = Router::new().route(
+        "/api/chat",
+        post(|Json(req): Json<Value>| async move {
+            let system = req["messages"][0]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .len();
+            let user = req["messages"][1]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            Json(json!({ "message": { "content": format!("echo:{user}|system_len={system}") } }))
+        }),
+    );
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    Ok(addr)
+}
+
+#[tokio::test]
+async fn dispatch_job_injects_the_sealed_charter_and_is_traced_once() -> TestResult {
+    let scratch = Scratch::new("dispatchjob")?;
+    let state = sealed_state(&scratch.db(), fake_chat().await?, None);
+    let body = json!({ "job": "genie.dispatch.local", "bsmc_namespace": "genie.dispatch.local",
+        "terrace_level": 3, "payload": { "model": "ziggurat:1.0.0", "operator_prompt": "hello" } })
+    .to_string();
+    let (code, reply) = job(&state, &body).await?;
+    assert_eq!(code, StatusCode::OK, "{reply}");
+    assert_eq!(
+        reply["result"]["model_output"],
+        format!("echo:hello|system_len={}", CHARTER.len())
+    );
+    assert_eq!(reply["baton_trace_id"], 1, "one trace, no second");
+    assert_eq!(Stele::open(&scratch.db())?.verify_chain()?, 2);
+
+    for payload in [
+        json!({ "model": "m" }),
+        json!({ "model": "bad model", "operator_prompt": "x" }),
+        json!({ "model": "m", "operator_prompt": "" }),
+    ] {
+        let (code, _) = job(&state, &handoff("genie.dispatch.local", 3, payload)).await?;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+    }
+    let down = sealed_state(&scratch.db(), dead_port().await?, None);
+    let (code, _) = job(
+        &down,
+        &handoff(
+            "genie.dispatch.local",
+            3,
+            json!({ "model": "m", "operator_prompt": "x" }),
+        ),
+    )
+    .await?;
+    assert_eq!(code, StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        Stele::open(&scratch.db())?.verify_chain()?,
+        2,
+        "failures record nothing"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn operator_trace_is_recorded_over_its_own_bytes() -> TestResult {
+    let scratch = Scratch::new("tracerecord")?;
+    let state = sealed_state(&scratch.db(), dead_port().await?, None);
+    let body = json!({ "job": "baton.trace.record", "bsmc_namespace": "ops.manual.run",
+        "terrace_level": 2, "payload": { "input": "ask", "output": "answer" } })
+    .to_string();
+    let (code, reply) = job(&state, &body).await?;
+    assert_eq!(code, StatusCode::OK, "{reply}");
+    let expected = baton_envelope(
+        &charter_digest(CHARTER),
+        &BsmcNamespace::parse("ops.manual.run")?,
+        TerraceLevel::try_from(2)?,
+        blake3::hash(b"ask").as_bytes(),
+        blake3::hash(b"answer").as_bytes(),
+    );
+    assert_eq!(reply["baton_envelope_blake3_hex"], digest_hex(&expected));
+    assert_eq!(
+        reply["result_blake3_hex"],
+        digest_hex(blake3::hash(b"answer").as_bytes())
+    );
+    assert_eq!(reply["result"]["source"], "operator");
+    let stele = Stele::open(&scratch.db())?;
+    assert_eq!(
+        stele.verify_chain()?,
+        2,
+        "genesis + the record row, no second trace row"
+    );
+    let row = stele.last()?.ok_or("no row")?;
+    assert_eq!(row.module_namespace, "baton.trace.record");
+    assert!(String::from_utf8(row.payload)?.starts_with("HCC-BATON-RECORD-v1\nsource=operator\n"));
+
+    let (code, again) = job(&state, &body).await?;
+    assert_eq!(code, StatusCode::CONFLICT);
+    assert_eq!(again["error"], job_error::TRACE_EXISTS);
+    let (code, _) = job(
+        &state,
+        &handoff("baton.trace.record", 2, json!({ "input": "x" })),
+    )
+    .await?;
+    assert_eq!(code, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        hcc_baton::BatonLedger::open(&scratch.db())?.replay(&charter_digest(CHARTER))?,
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn replay_pillar_and_health_jobs_report_live_state() -> TestResult {
+    let scratch = Scratch::new("lensejobs")?;
+    let state = sealed_state(&scratch.db(), dead_port().await?, None);
+    let (code, first) = job(&state, &handoff("baton.state.replay", 1, json!({}))).await?;
+    assert_eq!(code, StatusCode::OK, "{first}");
+    assert_eq!(first["result"]["traces_replayed"], 0);
+    let (_, second) = job(&state, &handoff("baton.state.replay", 1, json!({}))).await?;
+    assert_eq!(
+        second["result"]["traces_replayed"], 1,
+        "the first replay's own receipt"
+    );
+
+    let (code, pillar) = job(
+        &state,
+        &handoff(
+            "lense.pillar.status",
+            1,
+            json!({ "module_id": "M06-Polymorph" }),
+        ),
+    )
+    .await?;
+    assert_eq!(code, StatusCode::OK, "{pillar}");
+    assert_eq!(pillar["result"]["status"], "ROYAL_SEAL_LOCKED");
+    assert_eq!(pillar["result"]["module_id"], "M06-Polymorph");
+    let (code, _) = job(
+        &state,
+        &handoff("lense.pillar.status", 1, json!({ "module_id": "M99" })),
+    )
+    .await?;
+    assert_eq!(code, StatusCode::NOT_FOUND);
+
+    let (code, health) = job(&state, &handoff("lense.daemon.health", 1, json!({}))).await?;
+    assert_eq!(code, StatusCode::OK, "{health}");
+    assert_eq!(health["result"]["baton_last_trace_id"], 3);
+    assert_eq!(health["result"]["jobs_sealed"], 3);
+    assert_eq!(health["baton_trace_id"], 4);
+    Ok(())
+}

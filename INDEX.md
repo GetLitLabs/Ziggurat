@@ -99,23 +99,23 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `healer.diagnose.heap` | M04 | LIVE — fixture wasm (Vanguard job) |
 | `healer.patch.apply` | M04 | TYPED |
 | `wasi.sandbox.lock` | M04 | LIVE (Vanguard job) |
-| `seed.manifest.init` | M05 | LIVE |
+| `seed.manifest.init` | M05 | LIVE — `Blueprint::from_json` + `hcc_seed::render`, writes nothing (Vanguard job) |
 | `seed.scaffold.emit` | M05 | LIVE — writes files |
-| `ziggurat.daemon.boot` | M05/M02 | LIVE |
+| `ziggurat.daemon.boot` | M05/M02 | LIVE — boot; `Stele::ensure_genesis` re-run as a Vanguard job |
 | `polymorph.workspace.init` | M06 | TYPED |
 | `polymorph.emit.native` | M06 | TYPED |
-| `genesis.charter.version` | M07 | LIVE — `Stele::record_charter_version`, `lineage` |
+| `genesis.charter.version` | M07 | LIVE — `Stele::record_charter_version` (xtask), `lineage` (Vanguard job) |
 | `chare.provenance.tag` | M07 | TYPED — 67/30/3 metadata |
 | `zerotrace.key.destroy` | M08 | LIVE — `Keyring::destroy` (Vanguard job) |
 | `krypt.death.keyDestroy` | M08 | LIVE — same function (Vanguard job) |
-| `genie.prompt.seal` | M09 | LIVE |
-| `genie.dispatch.local` | M09 | LIVE |
-| `baton.trace.record` | M10 | LIVE |
-| `baton.state.replay` | M10 | LIVE |
+| `genie.prompt.seal` | M09 | LIVE — sealed system prompt; Vanguard job checks seal + Modelfile |
+| `genie.dispatch.local` | M09 | LIVE — `POST /v1/ramgenie/dispatch` and Vanguard job (daemon) |
+| `baton.trace.record` | M10 | LIVE — every dispatch/job; operator traces via Vanguard job (daemon) |
+| `baton.state.replay` | M10 | LIVE — at boot and as a Vanguard job (daemon) |
 | `konjure.pipeline.init` | M10 | TYPED |
 | `curie_monet.verify` | M10 | TYPED |
-| `lense.pillar.status` | M11 | LIVE |
-| `lense.daemon.health` | M11 | LIVE |
+| `lense.pillar.status` | M11 | LIVE — route and Vanguard job (daemon) |
+| `lense.daemon.health` | M11 | LIVE — route and Vanguard job (daemon) |
 | `inspect.gate.validate` | M11 | LIVE |
 | `origami.fold.assemble` | M12 | LIVE |
 | `sue.cockpit.mount` | M12 | LIVE |
@@ -348,8 +348,7 @@ Typestate: `SystemCharter<Unsealed>` has no `verified_prompt()`.
 
 “30 Vanguard” = capability table, not 30 processes.
 
-`hcc-vanguard::VANGUARD_TABLE` holds 35 named jobs: `scribe.stele.append` plus every §4.1 marker except
-`lense.daemon.health` (served as `GET /v1/ziggurat/health`). A row is LIVE only with a
+`hcc-vanguard::VANGUARD_TABLE` holds 36 named jobs: `scribe.stele.append` plus every §4.1 marker. A row is LIVE only with a
 handler and a test in the same commit; every other row is TYPED → `Err(Unimplemented { job })` (HTTP 501).
 Each LIVE row names its executor: `ledger` (runs with the vault lock held), `runner` (waits on the local runner
 on 127.0.0.1:11434 without the lock) or `daemon` (needs the daemon itself).
@@ -368,6 +367,15 @@ on 127.0.0.1:11434 without the lock) or `daemon` (needs the daemon itself).
 | `krypt.death.keyDestroy` | **LIVE** | ledger | same function as `zerotrace.key.destroy` |
 | `neural.index.upsert` | **LIVE** | runner | `{model}` → embeds every lesson with no vector for that model |
 | `neural.retrieve.lesson` | **LIVE** | runner | `{model, query, k?}` → exact cosine top-k (k ≤ 64, default 5) |
+| `seed.manifest.init` | **LIVE** | ledger | `{blueprint}` → validated blueprint, every file `seed.scaffold.emit` would write with its BLAKE3, `crate_dir_taken`; writes nothing |
+| `ziggurat.daemon.boot` | **LIVE** | ledger | `{}` → `Stele::ensure_genesis` (royal seal re-verified, genesis `PRESENT`/`CREATED` or refused on mismatch) + full chain recompute |
+| `genesis.charter.version` | **LIVE** | ledger | `{}` → charter lineage, oldest first, and whether its tip is the running charter (read-only; a new version is the xtask ceremony) |
+| `genie.prompt.seal` | **LIVE** | ledger | `{}` → royal seal re-verified over the running charter; `models/ziggurat-1.0.0.Modelfile` present and byte-equal to `xtask modelfile` output for its `FROM` base |
+| `genie.dispatch.local` | **LIVE** | daemon | `{model, operator_prompt}` → sealed charter as system message to the local runner; `model_output` (its one trace is the job receipt) |
+| `baton.trace.record` | **LIVE** | daemon | `{input, output}` → one BATON trace over exactly those bytes + `HCC-BATON-RECORD-v1 source=operator` row; that trace is the receipt (409 on an exact repeat) |
+| `baton.state.replay` | **LIVE** | daemon | `{}` → every envelope recomputed against the charter lineage (same check as boot) |
+| `lense.pillar.status` | **LIVE** | daemon | `{module_id}` → the pillar status JSON |
+| `lense.daemon.health` | **LIVE** | daemon | `{}` → the health JSON |
 | All other named jobs | TYPED | — | `Err(Unimplemented { job })` |
 
 Handoff JSON: `{ "job", "bsmc_namespace", "terrace_level", "payload" }`.
