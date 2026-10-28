@@ -289,6 +289,7 @@ async fn vault_path_that_is_a_directory_holds_dispatch() -> TestResult {
     std::fs::create_dir_all(&db)?;
     let boot = sealed_state(&db, dead_port().await?);
     assert!(!boot.stele_genesis && boot.ledgers.is_none());
+    drop(boot);
     cleanup(&db)?;
     Ok(())
 }
@@ -332,6 +333,7 @@ async fn vault_locked_past_the_timeout_appends_nothing() -> TestResult {
     assert_eq!(Stele::open(&db)?.len()?, 1, "genesis only");
     let baton = hcc_baton::BatonLedger::open(&db)?;
     assert!(baton.last()?.is_none(), "no BATON trace");
+    drop(baton);
     cleanup(&db)?;
     Ok(())
 }
