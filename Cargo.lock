@@ -1497,6 +1497,7 @@ dependencies = [
  "hcc-iedb-stele",
  "hcc-krypt",
  "hcc-neural",
+ "hcc-polymorph",
  "hcc-seal",
  "hcc-seed",
  "hcc-types",
@@ -1552,6 +1553,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hcc-polymorph"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "serde_json",
+]
+
+[[package]]
 name = "hcc-seal"
 version = "1.0.0"
 dependencies = [
@@ -1583,6 +1592,7 @@ dependencies = [
  "hcc-iedb-stele",
  "hcc-krypt",
  "hcc-neural",
+ "hcc-polymorph",
  "hcc-seal",
  "hcc-seed",
  "hcc-types",
@@ -1613,6 +1623,7 @@ dependencies = [
  "hcc-baton",
  "hcc-iedb-stele",
  "hcc-krypt",
+ "hcc-polymorph",
  "hcc-seal",
  "hcc-seed",
  "hcc-types",

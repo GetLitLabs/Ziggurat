@@ -7,6 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+hcc-polymorph.workspace = true
 hcc-seal.workspace = true
 hcc-iedb-stele.workspace = true
 hcc-baton.workspace = true

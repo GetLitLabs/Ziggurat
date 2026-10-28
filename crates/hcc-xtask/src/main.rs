@@ -222,8 +222,59 @@ fn run(args: &[String]) -> Result<(), XtaskError> {
             println!("next                 ollama create {MODEL_NAME} -f {MODELFILE_PATH}");
             Ok(())
         }
+        Some("polymorph") => {
+            use hcc_polymorph::{emit, probe, Target};
+            let probe = probe()?;
+            let target = match (args.get(1).map(String::as_str), args.get(2)) {
+                (Some("probe"), None) => {
+                    println!("rustc                {}", probe.rustc);
+                    println!("host                 {}", probe.host);
+                    println!("llvm                 {}", probe.llvm.as_deref().unwrap_or("?"));
+                    println!("native cpu           {}", probe.native_cpu.as_deref().unwrap_or("?"));
+                    println!("target cpus          {}", probe.target_cpus.len());
+                    println!("installed targets    {}", probe.installed_targets.join(", "));
+                    let wasm = probe.wasm_targets();
+                    println!(
+                        "wasm                 {}",
+                        if wasm.is_empty() { "none installed (rustup target add wasm32-unknown-unknown needs the network)".to_owned() } else { wasm.join(", ") }
+                    );
+                    return Ok(());
+                }
+                (Some("native"), Some(package)) => (
+                    package,
+                    Target::Native { cpu: args.get(3).map_or("native", String::as_str).to_owned() },
+                ),
+                (Some("wasm"), Some(package)) => (
+                    package,
+                    Target::Wasm { triple: args.get(3).map_or("wasm32-unknown-unknown", String::as_str).to_owned() },
+                ),
+                _ => {
+                    return Err(XtaskError::Usage(
+                        "polymorph probe | polymorph native <package> [cpu] | polymorph wasm <package> [wasm32 triple]".into(),
+                    ))
+                }
+            };
+            let (package, target) = target;
+            let report = emit(&workspace_root(), package, &target, &probe)?;
+            println!("package              {}", report.package);
+            println!("triple               {}", report.triple);
+            if let Some(cpu) = &report.resolved_cpu {
+                println!("cpu                  {cpu}");
+            }
+            println!("rustflags            {}", report.rustflags);
+            println!("target dir           {}", report.target_dir);
+            for artifact in &report.artifacts {
+                println!(
+                    "artifact             {}  {} bytes  blake3 {}",
+                    artifact.path,
+                    artifact.bytes,
+                    hex::encode(artifact.blake3)
+                );
+            }
+            Ok(())
+        }
         _ => Err(XtaskError::Usage(
-            "commands: keygen | sign-charter <charter> --key <file> | seal-charter <charter> [--pubkey <file> --sig <file>] | hygiene <charter> | seed <blueprint.json> | gates [--only N,N] | freeze-vendor [--undo] | modelfile --from <base> | charter-version <charter> --to-version X.Y.Z --vault <db> | krypt-rmk [path]".into(),
+            "commands: keygen | sign-charter <charter> --key <file> | seal-charter <charter> [--pubkey <file> --sig <file>] | hygiene <charter> | seed <blueprint.json> | gates [--only N,N] | freeze-vendor [--undo] | modelfile --from <base> | charter-version <charter> --to-version X.Y.Z --vault <db> | krypt-rmk [path] | polymorph probe|native <pkg> [cpu]|wasm <pkg> [triple]".into(),
         )),
     }
 }
