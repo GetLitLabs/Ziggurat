@@ -6,6 +6,8 @@
 //! freeze-vendor [--undo]          (vendor/ + local .cargo/config.toml, so cargo runs offline)
 //! gates         [--only 2,6,10]   (M11 audit, INDEX §14; exits non-zero unless every selected gate passes)
 //! seed          <blueprint.json>   (emit crates/<name>, add workspace member, cargo check; rolls back on failure)
+//! charter-version <charter> --to-version X.Y.Z --vault <eduba_vault.db>  (M07: move a vault to a newly sealed charter)
+//! modelfile     --from <base>      (models/ziggurat-1.0.0.Modelfile from the sealed charter)
 #![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
@@ -157,8 +159,63 @@ fn run(args: &[String]) -> Result<(), XtaskError> {
             println!("member               {}  (cargo check --offline passed)", report.member);
             Ok(())
         }
+        Some("charter-version") => {
+            let charter_path = positional(args)?;
+            let to_version = flag(args, "--to-version")?
+                .ok_or_else(|| XtaskError::Usage("charter-version needs --to-version X.Y.Z".into()))?;
+            let vault = flag(args, "--vault")?
+                .ok_or_else(|| XtaskError::Usage("charter-version needs --vault <eduba_vault.db>".into()))?;
+            let bytes = std::fs::read(charter_path)?;
+            let baked = hcc_seal::BAKED_SEAL;
+            let royal = baked
+                .and_then(|b| b.royal)
+                .ok_or(XtaskError::Seal(hcc_seal::SealError::NoRoyalSeal))?;
+            let charter = hcc_seal::SystemCharter::load(bytes)
+                .verify(baked.as_ref())
+                .map_err(|refusal| XtaskError::Seal(refusal.error))?;
+            let mut stele = hcc_iedb_stele::Stele::open(Path::new(vault))
+                .map_err(|e| XtaskError::Usage(format!("vault: {e}")))?;
+            let row = stele
+                .record_charter_version(&charter, &royal, to_version)
+                .map_err(|e| XtaskError::Usage(format!("charter-version: {e}")))?;
+            let rows = stele
+                .verify_chain()
+                .map_err(|e| XtaskError::Usage(format!("vault: {e}")))?;
+            let lineage = stele
+                .lineage()
+                .map_err(|e| XtaskError::Usage(format!("vault: {e}")))?;
+            println!("stele_id             {}", row.stele_id);
+            println!("blake3               {}", hex::encode(row.blake3_digest));
+            for epoch in &lineage {
+                println!(
+                    "charter              v{}  {} bytes  {}  (row {})",
+                    epoch.version,
+                    epoch.byte_len,
+                    hex::encode(epoch.digest),
+                    epoch.stele_id
+                );
+            }
+            println!("chain                verified, {rows} row(s)");
+            Ok(())
+        }
+        Some("modelfile") => {
+            use hcc_xtask::modelfile::{render, MODELFILE_PATH, MODEL_NAME};
+            let base = flag(args, "--from")?
+                .ok_or_else(|| XtaskError::Usage("modelfile --from <installed base model>".into()))?;
+            let root = workspace_root();
+            let charter = std::fs::read(root.join("charters").join("ZIGGURAT_v1.0.0.txt"))?;
+            let text = render(&charter, hcc_seal::BAKED_SEAL.as_ref(), base)?;
+            let target = root.join(MODELFILE_PATH);
+            if let Some(dir) = target.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&target, text.as_bytes())?;
+            println!("wrote                {MODELFILE_PATH}  ({} bytes, FROM {base})", text.len());
+            println!("next                 ollama create {MODEL_NAME} -f {MODELFILE_PATH}");
+            Ok(())
+        }
         _ => Err(XtaskError::Usage(
-            "commands: keygen | sign-charter <charter> --key <file> | seal-charter <charter> [--pubkey <file> --sig <file>] | hygiene <charter> | seed <blueprint.json> | gates [--only N,N] | freeze-vendor [--undo]".into(),
+            "commands: keygen | sign-charter <charter> --key <file> | seal-charter <charter> [--pubkey <file> --sig <file>] | hygiene <charter> | seed <blueprint.json> | gates [--only N,N] | freeze-vendor [--undo] | modelfile --from <base> | charter-version <charter> --to-version X.Y.Z --vault <db>".into(),
         )),
     }
 }

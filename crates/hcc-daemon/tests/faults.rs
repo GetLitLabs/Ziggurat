@@ -4,7 +4,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
@@ -106,12 +106,7 @@ fn sealed_state(db: &Path, runner_addr: SocketAddr) -> AccordionSwitchboardState
     let expected = sealed_constants();
     let charter = CharterStatus::from_bytes(CHARTER.to_vec(), Some(&expected));
     let boot = SteleBoot::boot(db, &charter, expected.royal.as_ref());
-    AccordionSwitchboardState {
-        charter,
-        stele_genesis: boot.genesis,
-        ledgers: boot.ledgers.map(Mutex::new),
-        runner_addr,
-    }
+    AccordionSwitchboardState::new(charter, boot.genesis, boot.ledgers, runner_addr)
 }
 
 async fn send(
@@ -447,12 +442,12 @@ async fn bad_seals_and_charters_stay_unsealed_and_never_open_the_vault() -> Test
         let make = || {
             let charter = CharterStatus::from_bytes(bytes.clone(), expected.as_ref());
             let boot = SteleBoot::boot(&db, &charter, expected.and_then(|e| e.royal).as_ref());
-            AccordionSwitchboardState {
+            AccordionSwitchboardState::new(
                 charter,
-                stele_genesis: boot.genesis,
-                ledgers: boot.ledgers.map(Mutex::new),
-                runner_addr: SocketAddr::from(([127, 0, 0, 1], 9)),
-            }
+                boot.genesis,
+                boot.ledgers,
+                SocketAddr::from(([127, 0, 0, 1], 9)),
+            )
         };
         let (code, body) = status(make(), loopback()).await?;
         assert_eq!(code, StatusCode::OK, "{name}");

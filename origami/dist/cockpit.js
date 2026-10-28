@@ -17,14 +17,14 @@ const TERRACES = [
 
 // INDEX.md §4. `live` is the spec status, not a health claim; health comes from the status poll.
 const MODULES = [
-  { id: "M01-NeuralHighway", terrace: 3, live: false },
+  { id: "M01-NeuralHighway", terrace: 3, live: true },
   { id: "M02-Accordion", terrace: 2, live: true },
   { id: "M03-Krypt", terrace: 1, live: true },
   { id: "M04-WasiHealer", terrace: 2, live: true },
   { id: "M05-CodeASeed", terrace: 3, live: true },
   { id: "M06-Polymorph", terrace: 2, live: false },
-  { id: "M07-Genesis", terrace: 1, live: false },
-  { id: "M08-ZeroTrace", terrace: 1, live: false },
+  { id: "M07-Genesis", terrace: 1, live: true },
+  { id: "M08-ZeroTrace", terrace: 1, live: true },
   { id: "M09-RamGenie", terrace: 3, live: true },
   { id: "M10-Baton", terrace: 4, live: true },
   { id: "M11-Lense", terrace: 4, live: true },

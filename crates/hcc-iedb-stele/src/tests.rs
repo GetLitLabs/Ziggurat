@@ -282,3 +282,174 @@ fn append_in_commits_only_with_the_callers_transaction() -> TestResult {
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+const CHARTER_C: &[u8] = b"charter C\n";
+
+#[test]
+fn charter_version_moves_the_vault_forward() -> TestResult {
+    let (a, royal_a) = sealed(CHARTER_A, b"operator")?;
+    let (b, royal_b) = sealed(CHARTER_B, b"operator")?;
+    let (c, royal_c) = sealed(CHARTER_C, b"operator")?;
+    let mut stele = Stele::open_in_memory()?;
+    assert!(stele.lineage()?.is_empty());
+    assert!(matches!(
+        stele.record_charter_version(&b, &royal_b, "1.0.1"),
+        Err(SteleError::GenesisMismatch)
+    ));
+    stele.ensure_genesis(&a, &royal_a)?;
+    stele.append(
+        "scribe.stele.append",
+        b"work under A",
+        &royal_a.operator_pubkey,
+        None,
+    )?;
+
+    let row = stele.record_charter_version(&b, &royal_b, "1.0.1")?;
+    assert_eq!(row.module_namespace, CHARTER_VERSION_NAMESPACE);
+    assert_eq!(row.royal_seal_sig, Some(royal_b.signature));
+    let text = String::from_utf8(row.payload.clone())?;
+    assert_eq!(
+        text,
+        format!(
+            "HCC-CHARTER-VERSION-v1\nfrom_version=1.0.0\nfrom_charter_byte_len={}\nfrom_charter_blake3_hex={}\nto_version=1.0.1\nto_charter_byte_len={}\nto_charter_blake3_hex={}\n",
+            CHARTER_A.len(),
+            digest_hex(&charter_digest(CHARTER_A)),
+            CHARTER_B.len(),
+            digest_hex(&charter_digest(CHARTER_B)),
+        )
+    );
+
+    let lineage = stele.lineage()?;
+    let versions: Vec<&str> = lineage.iter().map(|e| e.version.as_str()).collect();
+    assert_eq!(versions, ["1.0.0", "1.0.1"]);
+    assert_eq!(lineage[1].stele_id, row.stele_id);
+    assert!(matches!(
+        stele.ensure_genesis(&b, &royal_b)?,
+        Genesis::Present(_)
+    ));
+    assert!(matches!(
+        stele.ensure_genesis(&a, &royal_a),
+        Err(SteleError::GenesisMismatch)
+    ));
+    assert!(matches!(
+        stele.record_charter_version(&b, &royal_b, "1.0.2"),
+        Err(SteleError::AlreadyCurrent)
+    ));
+    for stale in [
+        "1.0.1", "1.0.0", "0.9.9", "1.0", "1.0.1.0", "v1.1.0", "1.a.0",
+    ] {
+        assert!(
+            matches!(
+                stele.record_charter_version(&c, &royal_c, stale),
+                Err(SteleError::BadCharterVersion { .. })
+            ),
+            "{stale}"
+        );
+    }
+    stele.record_charter_version(&c, &royal_c, "1.1.0")?;
+    assert_eq!(stele.lineage()?.len(), 3);
+    assert!(matches!(
+        stele.ensure_genesis(&c, &royal_c)?,
+        Genesis::Present(_)
+    ));
+    assert_eq!(stele.verify_chain()?, 4);
+    Ok(())
+}
+
+#[test]
+fn charter_version_needs_the_genesis_operator() -> TestResult {
+    let (a, royal_a) = sealed(CHARTER_A, b"operator")?;
+    let (b, royal_b) = sealed(CHARTER_B, b"someone else")?;
+    let mut stele = Stele::open_in_memory()?;
+    stele.ensure_genesis(&a, &royal_a)?;
+    assert!(matches!(
+        stele.record_charter_version(&b, &royal_b, "1.0.1"),
+        Err(SteleError::Seal(SealError::BadPublicKey))
+    ));
+    // A seal that does not sign this charter is refused before anything is read.
+    let forged = RoyalSeal {
+        operator_pubkey: royal_a.operator_pubkey,
+        signature: royal_b.signature,
+    };
+    assert!(matches!(
+        stele.record_charter_version(&b, &forged, "1.0.1"),
+        Err(SteleError::Seal(_))
+    ));
+    assert_eq!(stele.len()?, 1);
+    Ok(())
+}
+
+#[test]
+fn charter_version_namespace_is_reserved() -> TestResult {
+    let (a, royal_a) = sealed(CHARTER_A, b"operator")?;
+    let mut stele = Stele::open_in_memory()?;
+    stele.ensure_genesis(&a, &royal_a)?;
+    assert!(matches!(
+        stele.append(
+            CHARTER_VERSION_NAMESPACE,
+            b"x",
+            &royal_a.operator_pubkey,
+            None
+        ),
+        Err(SteleError::ReservedNamespace)
+    ));
+    let conn = stele.connection();
+    let tx = conn.unchecked_transaction()?;
+    assert!(matches!(
+        append_in(
+            &tx,
+            CHARTER_VERSION_NAMESPACE,
+            b"x",
+            &royal_a.operator_pubkey,
+            None
+        ),
+        Err(SteleError::ReservedNamespace)
+    ));
+    drop(tx);
+    assert_eq!(stele.len()?, 1);
+    Ok(())
+}
+
+#[test]
+fn unsigned_charter_version_row_breaks_the_lineage() -> TestResult {
+    let (a, royal_a) = sealed(CHARTER_A, b"operator")?;
+    let (b, _) = sealed(CHARTER_B, b"operator")?;
+    let mut stele = Stele::open_in_memory()?;
+    let genesis = stele.ensure_genesis(&a, &royal_a)?.row().clone();
+    let from = stele.lineage()?.remove(0);
+    let payload = charter_version_payload(&from, "1.0.1", b.byte_len(), b.digest());
+    let digest = stele_digest(&genesis.blake3_digest, &payload);
+    // Written around the API, with no royal seal: a well-linked row the chain accepts.
+    stele.connection().execute(
+        "INSERT INTO hcc_precedent_stele (prev_digest, module_namespace, version_tag, domain_separator,
+           payload, payload_byte_len, blake3_digest, ed25519_pubkey)
+         VALUES (?1, ?2, '1.0.0', X'4843432D5354454C4C452D763200', ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            &genesis.blake3_digest[..],
+            CHARTER_VERSION_NAMESPACE,
+            &payload,
+            i64::try_from(payload.len())?,
+            &digest[..],
+            &royal_a.operator_pubkey[..],
+        ],
+    )?;
+    assert_eq!(stele.verify_chain()?, 2);
+    assert!(matches!(
+        stele.lineage(),
+        Err(SteleError::BadCharterVersion {
+            stele_id: 2,
+            why: "no royal seal"
+        })
+    ));
+    assert!(stele.ensure_genesis(&b, &royal_a).is_err());
+    Ok(())
+}
+
+#[test]
+fn versions_compare_numerically() {
+    assert!(version_greater("1.0.10", "1.0.9"));
+    assert!(version_greater("2.0.0", "1.99.99"));
+    assert!(!version_greater("1.0.0", "1.0.0"));
+    assert!(!version_greater("1.0.1 ", "1.0.0"));
+    assert!(!version_greater("01.0.1x", "1.0.0"));
+}

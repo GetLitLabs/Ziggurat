@@ -1530,6 +1530,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hcc-neural"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "hcc-iedb-stele",
+ "hcc-seal",
+ "hcc-types",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rusqlite",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "hcc-seal"
 version = "1.0.0"
 dependencies = [
@@ -1589,10 +1605,23 @@ dependencies = [
  "hcc-seed",
  "hcc-types",
  "hcc-wasi-healer",
+ "hcc-zerotrace",
  "hex",
  "rusqlite",
  "serde_json",
  "zeroize",
+]
+
+[[package]]
+name = "hcc-zerotrace"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek",
+ "hcc-iedb-stele",
+ "hcc-krypt",
+ "hcc-seal",
+ "rusqlite",
 ]
 
 [[package]]
