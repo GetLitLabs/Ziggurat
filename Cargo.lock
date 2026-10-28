@@ -1500,6 +1500,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "rusqlite",
  "serde",
  "serde_json",
  "tokio",
@@ -1526,6 +1527,22 @@ dependencies = [
  "chacha20poly1305",
  "getrandom 0.2.17",
  "zeroize",
+]
+
+[[package]]
+name = "hcc-neural"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "hcc-iedb-stele",
+ "hcc-seal",
+ "hcc-types",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rusqlite",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1588,10 +1605,23 @@ dependencies = [
  "hcc-seed",
  "hcc-types",
  "hcc-wasi-healer",
+ "hcc-zerotrace",
  "hex",
  "rusqlite",
  "serde_json",
  "zeroize",
+]
+
+[[package]]
+name = "hcc-zerotrace"
+version = "1.0.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek",
+ "hcc-iedb-stele",
+ "hcc-krypt",
+ "hcc-seal",
+ "rusqlite",
 ]
 
 [[package]]

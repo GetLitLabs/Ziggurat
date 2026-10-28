@@ -70,14 +70,14 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 
 | ID | HTTP `module_id` | Name | Namespace | Status | Crate(s) |
 |---|---|---|---|---|---|
-| M01 | `M01-NeuralHighway` | Neural Highway | `neural.*` | TYPED | (later `hcc-neural`) |
+| M01 | `M01-NeuralHighway` | Neural Highway | `neural.*` | **LIVE** (crate) | `hcc-neural` |
 | M02 | `M02-Accordion` | Accordion.be | `accordion.*` | **LIVE** | `hcc-daemon` |
 | M03 | `M03-Krypt` | Krypt.DB / Eduba Vault | `krypt.*` `vault.*` | **LIVE** | `hcc-krypt` `hcc-iedb-stele` |
 | M04 | `M04-WasiHealer` | WASI Healer | `wasi.*` `healer.*` | **LIVE** (fixture) | `hcc-wasi-healer` |
 | M05 | `M05-CodeASeed` | Code A Seed | `seed.*` `ziggurat.*` | **LIVE** | `hcc-seed` |
 | M06 | `M06-Polymorph` | Polymorphic Engine | `polymorph.*` | TYPED | xtask target-cpu only |
 | M07 | `M07-Genesis` | Genesis / Chare | `genesis.*` `chare.*` | **LIVE** (charter versions) / TYPED (chare) | `hcc-iedb-stele` |
-| M08 | `M08-ZeroTrace` | Zero-Trace | `zerotrace.*` `trace.*` | TYPED | crypto-shred only when built |
+| M08 | `M08-ZeroTrace` | Zero-Trace | `zerotrace.*` `trace.*` | **LIVE** (crate) | `hcc-zerotrace` |
 | M09 | `M09-RamGenie` | RamGenie | `genie.*` | **LIVE** | `hcc-daemon` |
 | M10 | `M10-Baton` | BATON / Konjure / Curie-Monet | `baton.*` `konjure.*` `curie_monet.*` | **LIVE** (BATON) / TYPED (rest) | `hcc-baton` |
 | M11 | `M11-Lense` | Lense / Inspect-A-File | `lense.*` `inspect.*` | **LIVE** | `scripts/nine_gates_audit.sh` |
@@ -95,7 +95,7 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `krypt.fe_key.encrypt` | M03 | LIVE — FEK wrapped under DEK |
 | `krypt.stele.verify` | M03 | LIVE via `hcc-seal` |
 | `vault.ast.parse` | M03 | TYPED |
-| `vault.store.lesson` | M03 | TYPED |
+| `vault.store.lesson` | M03 | LIVE — `hcc-neural::LessonStore::store` |
 | `healer.diagnose.heap` | M04 | LIVE — fixture wasm |
 | `healer.patch.apply` | M04 | TYPED |
 | `wasi.sandbox.lock` | M04 | LIVE |
@@ -106,8 +106,8 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `polymorph.emit.native` | M06 | TYPED |
 | `genesis.charter.version` | M07 | LIVE — `Stele::record_charter_version`, `lineage` |
 | `chare.provenance.tag` | M07 | TYPED — 67/30/3 metadata |
-| `zerotrace.key.destroy` | M08 | TYPED |
-| `krypt.death.keyDestroy` | M08 | TYPED |
+| `zerotrace.key.destroy` | M08 | LIVE — `Keyring::destroy` |
+| `krypt.death.keyDestroy` | M08 | LIVE — same function |
 | `genie.prompt.seal` | M09 | LIVE |
 | `genie.dispatch.local` | M09 | LIVE |
 | `baton.trace.record` | M10 | LIVE |
@@ -115,12 +115,13 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `konjure.pipeline.init` | M10 | TYPED |
 | `curie_monet.verify` | M10 | TYPED |
 | `lense.pillar.status` | M11 | LIVE |
+| `lense.daemon.health` | M11 | LIVE |
 | `inspect.gate.validate` | M11 | LIVE |
 | `origami.fold.assemble` | M12 | LIVE |
 | `sue.cockpit.mount` | M12 | LIVE |
 | `tailor.burst.balance` | M12 | TYPED |
-| `neural.retrieve.lesson` | M01 | TYPED |
-| `neural.index.upsert` | M01 | TYPED |
+| `neural.retrieve.lesson` | M01 | LIVE — `hcc_neural::retrieve` |
+| `neural.index.upsert` | M01 | LIVE — `upsert_vector`, `index_pending` |
 
 Unknown namespace without a dot → HTTP 400. Known but TYPED → `Err(Unimplemented)`.
 
@@ -136,12 +137,14 @@ The HTTP `module_id` column is the wire: `hcc_daemon::MODULE_IDS` serves exactly
 | `hcc-seal` | T1 no_std | T1 | BLAKE3 domain hash, Ed25519 verify, typestate `Unsealed`/`RoyalSealed` |
 | `hcc-iedb-stele` | T2 | T1 | Hash-chained stele, WAL, immutable triggers |
 | `hcc-krypt` | T2 | T1 | 4-stratum wrap/unwrap, `Zeroize` |
+| `hcc-zerotrace` | T2 | T1 | Keyring table, crypto-shred, deletion certificate |
 | `hcc-daemon` | T2 lib+bin | T2–T3 | Bind `127.0.0.1:7749`, status, dispatch |
 | `hcc-baton` | T2 | T4 | Record/replay envelopes |
 | `hcc-seed` | T2 | T3 | Write real crate files + tests |
 | `hcc-wasi-healer` | T2 | T2/T4 | Fuel sandbox, empty wasm fixture |
 | `hcc-vanguard` | T2 | T3 | Job table; 3 live jobs |
-| `hcc-xtask` | T2 | T4 | `seal-charter`, `freeze-vendor`, `gates` |
+| `hcc-neural` | T2 | T3 | Lesson store, loopback embeddings, exact cosine retrieve |
+| `hcc-xtask` | T2 | T4 | `seal-charter`, `freeze-vendor`, `gates`, `modelfile` |
 | `ziggurat-desktop` | host | T5 | Tauri 2 shell; spawns daemon |
 
 Not members until they compile. No ghost crates in `Cargo.toml`.
@@ -162,10 +165,12 @@ ziggurat/
 ├── .gitattributes
 ├── .gitignore
 ├── charters/ZIGGURAT_v1.0.0.txt
+├── models/ziggurat-1.0.0.Modelfile   ← xtask output only
 ├── crates/hcc-types/
 ├── crates/hcc-seal/src/baked.rs      ← xtask output only
 ├── crates/hcc-iedb-stele/
 ├── crates/hcc-krypt/
+├── crates/hcc-zerotrace/
 ├── crates/hcc-daemon/src/
 │   ├── lib.rs
 │   ├── main.rs
@@ -174,6 +179,7 @@ ziggurat/
 ├── crates/hcc-seed/
 ├── crates/hcc-wasi-healer/
 ├── crates/hcc-vanguard/
+├── crates/hcc-neural/
 ├── crates/hcc-xtask/
 ├── src-tauri/
 │   ├── Cargo.toml
@@ -214,6 +220,7 @@ ziggurat/
 | Method | Path | Marker | Auth/guard |
 |---|---|---|---|
 | GET | `/v1/ziggurat/pillar/{module_id}/status` | `lense.pillar.status` | Loopback peer |
+| GET | `/v1/ziggurat/health` | `lense.daemon.health` | Loopback peer |
 | POST | `/v1/ramgenie/dispatch` | `genie.dispatch.local` | Loopback + sealed charter |
 
 ### 8.1 Status body
@@ -234,6 +241,12 @@ Reject: non-loopback, terrace ∉ 1..=5, namespace without `.`, unsealed charter
 
 Runner down → 502, UI red, no forged BATON.
 
+### 8.4 Health body
+
+`ziggurat_version`, `charter_sealed`, `stele_genesis`, `ledgers_open`, `stele_rows`, `stele_head_blake3_hex`, `baton_last_trace_id`, `baton_head_envelope_hex`, `runner_up`, `uptime_secs`, `dispatches_sealed`, `dispatches_refused`, `last_dispatch_error`, `loopback_peer`
+
+Rows and heads are read from the vault on each request; `null` when the ledgers are not open or the read fails (logged). Counters live in the daemon process and reset at boot. Nothing leaves the machine.
+
 ---
 
 ## 9. Ledger index
@@ -245,6 +258,7 @@ Runner down → 502, UI red, no forged BATON.
 | Stele | `b"HCC-STELLE-v2\x00"` (14) | Charter + stele rows. Spelling frozen |
 | BATON | `b"HCC-BATON-v1\x00"` (13) | Dispatch/trace envelopes |
 | Krypt HKDF | `"HCC-KRYPT-STRATUM-v2"` | KEK derive context string |
+| Zero-Trace | `b"HCC-ZEROTRACE-v1\x00"` (17) | Envelope fingerprint kept after a shred |
 
 ### 9.2 Tables
 
@@ -274,6 +288,16 @@ charters/ZIGGURAT_v1.0.1.txt --to-version 1.0.1 --vault <eduba_vault.db>`, then 
 **`hcc_baton_trace_ledger`**  
 `trace_id`, `prev_digest`, `module_namespace`, `sequence_number`, `terrace_level` CHECK 1–5, `input_state_hash`, `output_state_hash`, `baton_envelope_sig` UNIQUE, `recorded_at_utc`
 
+**`hcc_neural_lesson`** (M01/M03, same vault file)  
+`lesson_id`, `module_namespace`, `title`, `body`, `body_blake3` UNIQUE, `stele_id`, `stored_at_utc`. Append-only triggers.
+Storing a lesson appends stele row `vault.store.lesson`: `HCC-LESSON-v1\nlesson_id=…\nbsmc_namespace=…\ntitle_blake3_hex=…\nbody_blake3_hex=…\n` (hashes only) in the same transaction.
+
+**`hcc_neural_index`**  
+`(lesson_id, model)` PK, `dim` 1..=16384, `vector` (dim × f32 LE), `body_blake3` (bytes the vector was made from), `indexed_at_utc`. Upsert, not a ledger.
+
+**`hcc_krypt_keyring`** (M08, same vault file)  
+`key_id` (first 16 bytes of the fingerprint, hex), `label` (1..=64 of `[A-Za-z0-9._-]`), `envelope_blake3` UNIQUE, `salt`, `dek_nonce`, `wrapped_dek`, `fek_nonce`, `wrapped_fek`, `created_at_utc`, `destroyed_at_utc`, `certificate_stele_id`. A row CHECK allows exactly two shapes: live (all key columns set, no certificate) or shredded (all key columns NULL, certificate set). Triggers refuse DELETE and any UPDATE other than live → shredded.
+
 **`hcc_ramgenie_dispatch_log`**  
 Optional denormalized view of dispatches; still chained; still append-only.
 
@@ -296,7 +320,18 @@ Optional denormalized view of dispatches; still chained; still append-only.
 
 `hcc-krypt` reading of IV: the FEK is wrapped under the DEK with ChaCha20-Poly1305 (the DEK's cipher); the FEK seals file bytes with AES-256-GCM. Wrapped keys carry their stratum name as AEAD associated data.
 
-Wipe (M08 when live) = crypto-shred keys + deletion certificate on stele. No SSD Gutmann claims.
+Wipe (M08) = crypto-shred keys + deletion certificate on stele. No SSD Gutmann claims.
+
+`hcc-zerotrace::Keyring` persists each `StratumEnvelope` (salt, wrapped DEK, wrapped FEK; never a plaintext key)
+in `hcc_krypt_keyring`, on a connection with `PRAGMA secure_delete = ON`. `destroy(key_id, operator_pubkey)` runs in
+one IMMEDIATE transaction: refuse unless stele row 1 is genesis, append the certificate row under
+`zerotrace.key.destroy`, NULL the salt and both wrapped keys (SQLite zeroes the freed bytes), commit, then
+`PRAGMA wal_checkpoint(TRUNCATE)`. Certificate payload:
+`HCC-ZEROTRACE-v1\nkey_id=…\nlabel=…\nenvelope_blake3_hex=…\ndestroyed=…\nmethod=…\nscope=…\n` where
+`envelope_blake3 = BLAKE3(b"HCC-ZEROTRACE-v1\x00" || salt || dek_nonce || wrapped_dek || fek_nonce || wrapped_fek)`.
+Scope is stated in the row: this vault file only; copies taken earlier still hold the envelope. `wal_truncated`
+is false when another connection kept the WAL busy. As Vanguard jobs both M08 markers stay TYPED; the daemon has
+no wipe route yet.
 
 Typestate: `SystemCharter<Unsealed>` has no `verified_prompt()`.
 
@@ -398,6 +433,19 @@ cargo tauri build --bundles app
 
 Optional weather: local Ollama/Candle already listening on `127.0.0.1:11434`. Absence must not crash the daemon.
 
+M01 embeddings: `POST 127.0.0.1:11434/api/embed {"model","input":[..]}` → `{"embeddings":[[..]]}` via hyper on a loopback
+literal (`hcc_neural::embed` refuses any non-loopback address). `index_pending` embeds lessons with no vector for that
+model; `retrieve` embeds the query and returns the exact top-k (k ≤ 64) by cosine, brute force, ties by lower
+`lesson_id`. Runner down → `EmbedError::Unreachable`, a non-2xx reply → `Status(code, runner text)`, wrong vector
+count → `EmbedCount`; nothing is written on any of them. No ANN index and no latency claims. As Vanguard jobs the three
+markers stay TYPED and the daemon has no lesson route yet. Lesson bodies are stored as plaintext in the vault file;
+sealing them under a Krypt FEK is not built.
+
+`ziggurat:1.0.0` = `models/ziggurat-1.0.0.Modelfile`, written by `cargo run -p hcc-xtask -- modelfile --from <base>`
+only after the charter verifies against `BAKED_SEAL` (royal seal required). SYSTEM is the charter byte for byte,
+FROM is an operator-installed base (allow-list `[A-Za-z0-9._:/-]`), no PARAMETER lines. A test pins the committed
+file to the charter. The charter file remains the only prompt source; the daemon still injects it per dispatch.
+
 ---
 
 ## 14. Nine Gates index (M11)
@@ -414,7 +462,7 @@ Optional weather: local Ollama/Candle already listening on `127.0.0.1:11434`. Ab
 | 8 | Tauri CSP contains both loopback hosts |
 | 9 | `origami/dist` exists; no non-loopback URLs |
 | 10 | stele/baton `prev_digest` + immutable triggers |
-| 11 | krypt round-trip + healer empty wasm under fuel |
+| 11 | krypt round-trip + zero-trace shred + healer empty wasm under fuel |
 
 ---
 

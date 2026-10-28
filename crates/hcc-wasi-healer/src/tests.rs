@@ -152,3 +152,51 @@ fn unbounded_recursion_traps_instead_of_aborting() -> TestResult {
     ));
     Ok(())
 }
+
+#[test]
+fn zero_fuel_refuses_any_work() -> TestResult {
+    let bytes = wat::parse_str(r#"(module (func (export "_start") (nop)))"#)?;
+    assert_eq!(
+        diagnose(&bytes, &locked_with_fuel(0)),
+        Err(HealerError::OutOfFuel { cap: 0 })
+    );
+    Ok(())
+}
+
+#[test]
+fn fuel_accounting_is_deterministic_and_per_call() -> TestResult {
+    // A bounded loop: same module, same policy, same fuel bill every time. An exhausted
+    // run in between must not leak into the next call's store.
+    let bounded = wat::parse_str(
+        r#"(module (func (export "_start") (local $i i32)
+            (loop (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                  (br_if 0 (i32.lt_u (local.get $i) (i32.const 1000))))))"#,
+    )?;
+    let spin = wat::parse_str(r#"(module (func (export "_start") (loop (br 0))))"#)?;
+    let first = diagnose(&bounded, &SandboxPolicy::LOCKED)?.fuel_consumed;
+    assert!(diagnose(&spin, &locked_with_fuel(5_000)).is_err());
+    let second = diagnose(&bounded, &SandboxPolicy::LOCKED)?.fuel_consumed;
+    assert!(first > 1000, "loop of 1000 iterations was charged {first}");
+    assert_eq!(first, second);
+    // Exactly the bill succeeds; one less runs out.
+    assert!(diagnose(&bounded, &locked_with_fuel(first)).is_ok());
+    assert_eq!(
+        diagnose(&bounded, &locked_with_fuel(first - 1)),
+        Err(HealerError::OutOfFuel { cap: first - 1 })
+    );
+    Ok(())
+}
+
+#[test]
+fn growing_memory_in_a_loop_hits_a_cap_not_the_host() -> TestResult {
+    // Grows one page per iteration forever: either the memory cap or fuel stops it.
+    let bytes = wat::parse_str(
+        r#"(module (memory 1)
+            (func (export "_start")
+              (loop (drop (memory.grow (i32.const 1))) (br 0))))"#,
+    )?;
+    match diagnose(&bytes, &SandboxPolicy::LOCKED) {
+        Err(HealerError::MemoryCap { .. } | HealerError::OutOfFuel { .. }) => Ok(()),
+        other => Err(format!("expected a cap, got {other:?}").into()),
+    }
+}
