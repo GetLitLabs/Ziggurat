@@ -14,6 +14,7 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `crates/hcc-seal/src/baked.rs` | Length + digest baked; **no royal seal yet**, so the charter stays Unsealed |
 | `hcc-iedb-stele` | Append-only hash-chained stele in SQLite WAL; abort triggers; genesis embeds the charter |
 | `hcc-krypt` | RMK → KEK (BLAKE3 `derive_key`, context `HCC-KRYPT-STRATUM-v2`) → DEK (ChaCha20-Poly1305 wrap) → FEK (wrapped under DEK; AES-256-GCM data); random nonces; zeroize on drop. Not wired into the daemon yet |
+| `hcc-zerotrace` | M08 Zero-Trace: `hcc_krypt_keyring` in the vault file holds wrapped envelopes only; `Keyring::destroy` crypto-shreds one key (secure_delete, then WAL TRUNCATE) and appends an `HCC-ZEROTRACE-v1` deletion certificate to the stele in the same transaction. Scope is this vault file; no claims about flash wear-levelling. Not wired into the daemon or Vanguard yet |
 | `hcc-baton` | `hcc_baton_trace_ledger`: frozen envelope, hash-chained traces, record + replay, abort triggers |
 | `hcc-vanguard` | 35-entry job table with JSON handoff; `scribe.stele.append`, `seed.scaffold.emit` and `inspect.gate.validate` live; the rest `Err(Unimplemented)` |
 | `hcc-seed` | M05 Code A Seed: validated blueprint JSON → `crates/<name>` (Cargo.toml, lib, schema tests, WAL); deterministic; adds the workspace member; `cargo check --offline`, rolled back on failure; never overwrites |
@@ -106,6 +107,7 @@ ziggurat/
 │   ├── hcc-seal/                   # T1 BLAKE3 + Ed25519 verify
 │   ├── hcc-iedb-stele/             # T2 hash-chained stele + WAL
 │   ├── hcc-krypt/                  # T2 RMK→KEK→DEK→FEK
+│   ├── hcc-zerotrace/              # T2 M08 crypto-shred + deletion certificate
 │   ├── hcc-daemon/                 # T2 Accordion + RamGenie wire
 │   ├── hcc-baton/                  # T2 trace record + replay
 │   ├── hcc-seed/                   # T2 writes real crate files

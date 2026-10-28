@@ -13,6 +13,7 @@ hcc-types.workspace = true
 hcc-iedb-stele.workspace = true
 hcc-baton.workspace = true
 hcc-krypt.workspace = true
+hcc-zerotrace.workspace = true
 hcc-wasi-healer.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
