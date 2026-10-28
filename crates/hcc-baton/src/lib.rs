@@ -320,10 +320,18 @@ impl BatonLedger {
 
     /// `baton.state.replay`: recompute every envelope under `charter_digest`. Returns the count.
     pub fn replay(&self, charter_digest: &Digest) -> Result<u64, BatonError> {
+        self.replay_lineage(std::slice::from_ref(charter_digest))
+    }
+
+    /// Replay across charter versions (M07). `lineage` lists every charter the vault has run
+    /// under, oldest first. Each trace must match one of them, and never an older one than the
+    /// trace before it: a vault moves forward through its charters, not back.
+    pub fn replay_lineage(&self, lineage: &[Digest]) -> Result<u64, BatonError> {
         let sql = format!("SELECT {COLUMNS} FROM hcc_baton_trace_ledger ORDER BY trace_id ASC");
         let mut stmt = self.conn.prepare(&sql)?;
         let mut rows = stmt.query([])?;
         let mut expected_prev = GENESIS_PREV_DIGEST;
+        let mut epoch = 0usize;
         let mut count: u64 = 0;
         while let Some(r) = rows.next()? {
             let trace = decode(raw(r)?)?;
@@ -332,19 +340,29 @@ impl BatonLedger {
             };
             let ns = BsmcNamespace::parse(&trace.module_namespace)
                 .map_err(|_| BatonError::BadNamespace)?;
-            let recomputed = baton_envelope(
-                charter_digest,
-                &ns,
-                trace.terrace_level,
-                &trace.input_state_hash,
-                &trace.output_state_hash,
-            );
+            let matched = lineage
+                .iter()
+                .enumerate()
+                .skip(epoch)
+                .find(|(_, digest)| {
+                    baton_envelope(
+                        digest,
+                        &ns,
+                        trace.terrace_level,
+                        &trace.input_state_hash,
+                        &trace.output_state_hash,
+                    ) == trace.envelope
+                })
+                .map(|(i, _)| i);
             count += 1;
-            if trace.prev_digest != expected_prev
-                || u64::try_from(trace.sequence_number).ok() != Some(count)
-                || trace.envelope != recomputed
-            {
-                return Err(mismatch);
+            match matched {
+                Some(i)
+                    if trace.prev_digest == expected_prev
+                        && u64::try_from(trace.sequence_number).ok() == Some(count) =>
+                {
+                    epoch = i;
+                }
+                _ => return Err(mismatch),
             }
             expected_prev = trace.envelope;
         }

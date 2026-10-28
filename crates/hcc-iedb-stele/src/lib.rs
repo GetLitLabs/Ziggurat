@@ -20,6 +20,9 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 pub const GENESIS_PREV_DIGEST: Digest = [0u8; 32];
 pub const GENESIS_NAMESPACE: &str = "ziggurat.daemon.boot";
 pub const VERSION_TAG: &str = "1.0.0";
+/// M07 `genesis.charter.version`: rows in this namespace move the vault to a new sealed charter.
+/// Only [`Stele::record_charter_version`] may write it.
+pub const CHARTER_VERSION_NAMESPACE: &str = "genesis.charter.version";
 /// How long a write waits for another connection's lock on the vault file (a second daemon,
 /// a backup copy) before SQLite reports busy. rusqlite's own default is also 5 s; this pins it
 /// so a dependency bump cannot change it silently. Shared by the stele and the BATON ledger.
@@ -101,11 +104,25 @@ impl Genesis {
 #[derive(Debug)]
 pub enum SteleError {
     Sql(rusqlite::Error),
-    Corrupt { stele_id: i64, column: &'static str },
-    ChainBroken { stele_id: i64 },
+    Corrupt {
+        stele_id: i64,
+        column: &'static str,
+    },
+    ChainBroken {
+        stele_id: i64,
+    },
     GenesisMismatch,
     BadNamespace,
     Seal(SealError),
+    /// `genesis.charter.version` is written only by `record_charter_version`.
+    ReservedNamespace,
+    /// A charter-version row (or the genesis row it builds on) does not hold up.
+    BadCharterVersion {
+        stele_id: i64,
+        why: &'static str,
+    },
+    /// The vault is already on this charter.
+    AlreadyCurrent,
 }
 
 impl fmt::Display for SteleError {
@@ -121,11 +138,19 @@ impl fmt::Display for SteleError {
             Self::ChainBroken { stele_id } => {
                 write!(f, "stele chain broken at row {stele_id}")
             }
-            Self::GenesisMismatch => {
-                f.write_str("genesis stele was written under a different charter")
-            }
+            Self::GenesisMismatch => f.write_str(
+                "stele charter lineage ends at a different charter than the one booting",
+            ),
             Self::BadNamespace => f.write_str("module_namespace must contain a dot"),
             Self::Seal(err) => write!(f, "seal: {err}"),
+            Self::ReservedNamespace => write!(
+                f,
+                "{CHARTER_VERSION_NAMESPACE} rows are written only by record_charter_version"
+            ),
+            Self::BadCharterVersion { stele_id, why } => {
+                write!(f, "charter lineage broken at stele row {stele_id}: {why}")
+            }
+            Self::AlreadyCurrent => f.write_str("the vault is already on this charter"),
         }
     }
 }
@@ -333,7 +358,11 @@ impl Stele {
     ) -> Result<Genesis, SteleError> {
         verify_royal_seal(royal, charter.digest()).map_err(SteleError::Seal)?;
         if let Some(first) = self.first()? {
-            return if self.genesis_matches(charter.byte_len(), charter.digest())? {
+            let lineage = self.lineage()?;
+            let current = lineage
+                .last()
+                .is_some_and(|tip| tip.matches(charter.byte_len(), charter.digest()));
+            return if current {
                 Ok(Genesis::Present(first))
             } else {
                 Err(SteleError::GenesisMismatch)
@@ -366,10 +395,222 @@ impl Stele {
         })
     }
 
+    /// Every charter the vault has run under, oldest first: the genesis charter, then one epoch
+    /// per `genesis.charter.version` row. Each row must be canonical, continue from the previous
+    /// tip to a strictly higher version, and carry the genesis operator's Ed25519 signature over
+    /// its new charter digest. Empty for an empty stele.
+    pub fn lineage(&self) -> Result<Vec<CharterEpoch>, SteleError> {
+        let Some(genesis) = self.first()? else {
+            return Ok(Vec::new());
+        };
+        let bad = |why| SteleError::BadCharterVersion {
+            stele_id: genesis.stele_id,
+            why,
+        };
+        if genesis.module_namespace != GENESIS_NAMESPACE
+            || genesis.prev_digest != GENESIS_PREV_DIGEST
+        {
+            return Err(bad("row 1 is not a genesis row"));
+        }
+        let fields =
+            payload_fields(&genesis.payload, "HCC-GENESIS-v1").ok_or(bad("genesis payload"))?;
+        let mut tip = CharterEpoch {
+            version: field(&fields, "ziggurat_version").ok_or(bad("genesis version"))?,
+            byte_len: field(&fields, "charter_byte_len")
+                .and_then(|v| v.parse().ok())
+                .ok_or(bad("genesis byte_len"))?,
+            digest: field(&fields, "charter_blake3_hex")
+                .and_then(|h| digest_from_hex(&h))
+                .ok_or(bad("genesis digest"))?,
+            stele_id: genesis.stele_id,
+        };
+        if genesis.payload != genesis_payload(tip.byte_len, &tip.digest) {
+            return Err(bad("genesis payload is not canonical"));
+        }
+        let operator = genesis.ed25519_pubkey;
+        let mut lineage = Vec::new();
+        let sql = format!(
+            "SELECT {ROW_COLUMNS} FROM hcc_precedent_stele WHERE module_namespace = ?1 ORDER BY stele_id ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query(params![CHARTER_VERSION_NAMESPACE])?;
+        while let Some(r) = rows.next()? {
+            let row = decode(raw_row(r)?)?.row;
+            let bad = |why| SteleError::BadCharterVersion {
+                stele_id: row.stele_id,
+                why,
+            };
+            let fields = payload_fields(&row.payload, "HCC-CHARTER-VERSION-v1")
+                .ok_or(bad("payload header"))?;
+            let next = CharterEpoch {
+                version: field(&fields, "to_version").ok_or(bad("to_version"))?,
+                byte_len: field(&fields, "to_charter_byte_len")
+                    .and_then(|v| v.parse().ok())
+                    .ok_or(bad("to_charter_byte_len"))?,
+                digest: field(&fields, "to_charter_blake3_hex")
+                    .and_then(|h| digest_from_hex(&h))
+                    .ok_or(bad("to_charter_blake3_hex"))?,
+                stele_id: row.stele_id,
+            };
+            if row.payload
+                != charter_version_payload(&tip, &next.version, next.byte_len, &next.digest)
+            {
+                return Err(bad("does not continue from the previous charter"));
+            }
+            if !version_greater(&next.version, &tip.version) {
+                return Err(bad("version does not increase"));
+            }
+            if row.ed25519_pubkey != operator {
+                return Err(bad("signed by a different operator key than genesis"));
+            }
+            let signature = row.royal_seal_sig.ok_or(bad("no royal seal"))?;
+            verify_royal_seal(
+                &RoyalSeal {
+                    operator_pubkey: operator,
+                    signature,
+                },
+                &next.digest,
+            )
+            .map_err(|_| bad("royal seal does not verify"))?;
+            lineage.push(std::mem::replace(&mut tip, next));
+        }
+        lineage.push(tip);
+        Ok(lineage)
+    }
+
+    /// `genesis.charter.version`: move this vault from its current charter to `charter`, which
+    /// the operator has royal-sealed. Appends one row signed with that seal. The stele keeps every
+    /// earlier row; booting under any older charter is refused afterwards.
+    pub fn record_charter_version(
+        &mut self,
+        charter: &SystemCharter<RoyalSealed>,
+        royal: &RoyalSeal,
+        to_version: &str,
+    ) -> Result<SteleRow, SteleError> {
+        verify_royal_seal(royal, charter.digest()).map_err(SteleError::Seal)?;
+        let lineage = self.lineage()?;
+        let tip = lineage.last().ok_or(SteleError::GenesisMismatch)?;
+        if tip.matches(charter.byte_len(), charter.digest()) {
+            return Err(SteleError::AlreadyCurrent);
+        }
+        let genesis = self.first()?.ok_or(SteleError::GenesisMismatch)?;
+        if royal.operator_pubkey != genesis.ed25519_pubkey {
+            return Err(SteleError::Seal(SealError::BadPublicKey));
+        }
+        if !version_greater(to_version, &tip.version) {
+            return Err(SteleError::BadCharterVersion {
+                stele_id: tip.stele_id,
+                why: "new version must be MAJOR.MINOR.PATCH and higher than the current one",
+            });
+        }
+        let payload =
+            charter_version_payload(tip, to_version, charter.byte_len(), charter.digest());
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let stele_id = append_row_in(
+            &tx,
+            CHARTER_VERSION_NAMESPACE,
+            &payload,
+            &royal.operator_pubkey,
+            Some(&royal.signature),
+        )?;
+        tx.commit()?;
+        self.row(stele_id)?
+            .ok_or(SteleError::ChainBroken { stele_id })
+    }
+
     #[cfg(test)]
     fn connection(&self) -> &Connection {
         &self.conn
     }
+}
+
+/// One charter the vault has run under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CharterEpoch {
+    pub version: String,
+    pub byte_len: usize,
+    pub digest: Digest,
+    /// The genesis row, or the `genesis.charter.version` row that started this epoch.
+    pub stele_id: i64,
+}
+
+impl CharterEpoch {
+    pub fn matches(&self, byte_len: usize, digest: &Digest) -> bool {
+        self.byte_len == byte_len && &self.digest == digest
+    }
+}
+
+/// Canonical `genesis.charter.version` payload.
+pub fn charter_version_payload(
+    from: &CharterEpoch,
+    to_version: &str,
+    to_byte_len: usize,
+    to_digest: &Digest,
+) -> Vec<u8> {
+    format!(
+        "HCC-CHARTER-VERSION-v1\nfrom_version={}\nfrom_charter_byte_len={}\nfrom_charter_blake3_hex={}\n\
+         to_version={to_version}\nto_charter_byte_len={to_byte_len}\nto_charter_blake3_hex={}\n",
+        from.version,
+        from.byte_len,
+        digest_hex(&from.digest),
+        digest_hex(to_digest)
+    )
+    .into_bytes()
+}
+
+/// `MAJOR.MINOR.PATCH`, each 1..=5 ASCII digits.
+fn version_parts(version: &str) -> Option<[u32; 3]> {
+    let mut parts = version.split('.');
+    let mut out = [0u32; 3];
+    for slot in &mut out {
+        let part = parts.next()?;
+        if part.is_empty() || part.len() > 5 || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        *slot = part.parse().ok()?;
+    }
+    parts.next().is_none().then_some(out)
+}
+
+/// True when both parse and `next` is strictly higher than `current`.
+pub fn version_greater(next: &str, current: &str) -> bool {
+    match (version_parts(next), version_parts(current)) {
+        (Some(a), Some(b)) => a > b,
+        _ => false,
+    }
+}
+
+/// `key=value` lines after a fixed header line; `None` unless every line has that shape.
+fn payload_fields(payload: &[u8], header: &str) -> Option<Vec<(String, String)>> {
+    let text = std::str::from_utf8(payload).ok()?;
+    let mut lines = text.strip_suffix('\n')?.split('\n');
+    if lines.next()? != header {
+        return None;
+    }
+    lines
+        .map(|l| l.split_once('=').map(|(k, v)| (k.to_owned(), v.to_owned())))
+        .collect()
+}
+
+fn field(fields: &[(String, String)], key: &str) -> Option<String> {
+    fields
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+}
+
+fn digest_from_hex(hex: &str) -> Option<Digest> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (slot, pair) in out.iter_mut().zip(hex.as_bytes().chunks(2)) {
+        let pair = std::str::from_utf8(pair).ok()?;
+        *slot = u8::from_str_radix(pair, 16).ok()?;
+    }
+    (digest_hex(&out) == hex).then_some(out)
 }
 
 /// Row count and head digest read inside a transaction the caller owns, so they come from the
@@ -396,6 +637,25 @@ pub fn head_in(tx: &rusqlite::Transaction<'_>) -> Result<(u64, Option<Digest>), 
 /// vault file. Lets another ledger (BATON) commit its row and the stele row atomically.
 /// Returns the new `stele_id`; nothing is visible until the caller commits.
 pub fn append_in(
+    tx: &rusqlite::Transaction<'_>,
+    module_namespace: &str,
+    payload: &[u8],
+    ed25519_pubkey: &[u8; 32],
+    royal_seal_sig: Option<&[u8; 64]>,
+) -> Result<i64, SteleError> {
+    if module_namespace == CHARTER_VERSION_NAMESPACE {
+        return Err(SteleError::ReservedNamespace);
+    }
+    append_row_in(
+        tx,
+        module_namespace,
+        payload,
+        ed25519_pubkey,
+        royal_seal_sig,
+    )
+}
+
+fn append_row_in(
     tx: &rusqlite::Transaction<'_>,
     module_namespace: &str,
     payload: &[u8],

@@ -10,9 +10,9 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `charters/ZIGGURAT_v1.0.0.txt` | Frozen: 4660 bytes, LF only, no BOM |
 | `hcc-types` | `TerraceLevel` (1..=5), `BsmcNamespace` (must contain a dot) |
 | `hcc-seal` | `no_std`; domain-separated BLAKE3, Ed25519 verify, `SystemCharter<Unsealed>` / `<RoyalSealed>` |
-| `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene`, `seed <blueprint.json>`, `gates [--only N,N]` (M11 audit, INDEX §14), `freeze-vendor [--undo]`, `modelfile --from <base>` |
+| `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene`, `seed <blueprint.json>`, `gates [--only N,N]` (M11 audit, INDEX §14), `freeze-vendor [--undo]`, `modelfile --from <base>`, `charter-version` |
 | `crates/hcc-seal/src/baked.rs` | Length + digest baked; **no royal seal yet**, so the charter stays Unsealed |
-| `hcc-iedb-stele` | Append-only hash-chained stele in SQLite WAL; abort triggers; genesis embeds the charter |
+| `hcc-iedb-stele` | Append-only hash-chained stele in SQLite WAL; abort triggers; genesis embeds the charter; M07 charter lineage (`record_charter_version`, `lineage`) |
 | `hcc-krypt` | RMK → KEK (BLAKE3 `derive_key`, context `HCC-KRYPT-STRATUM-v2`) → DEK (ChaCha20-Poly1305 wrap) → FEK (wrapped under DEK; AES-256-GCM data); random nonces; zeroize on drop. Not wired into the daemon yet |
 | `hcc-neural` | M01 Neural Highway: `vault.store.lesson` appends a lesson plus an `HCC-LESSON-v1` stele row (hashes only); `neural.index.upsert` stores per-model f32 vectors from the runner's `/api/embed` on 127.0.0.1:11434; `neural.retrieve.lesson` is exact brute-force cosine top-k. Runner down is a typed error. Not wired into the daemon or Vanguard yet; lesson text is not encrypted yet |
 | `hcc-zerotrace` | M08 Zero-Trace: `hcc_krypt_keyring` in the vault file holds wrapped envelopes only; `Keyring::destroy` crypto-shreds one key (secure_delete, then WAL TRUNCATE) and appends an `HCC-ZEROTRACE-v1` deletion certificate to the stele in the same transaction. Scope is this vault file; no claims about flash wear-levelling. Not wired into the daemon or Vanguard yet |
@@ -89,6 +89,21 @@ cargo test -p hcc-seal
 shown only for comparison; the two never match. Re-running `seal-charter` on the same
 file must produce a byte-identical `baked.rs`; if it does not, the file has a CRLF or BOM
 fault, not a crypto fault.
+
+### Charter bump (M07 `genesis.charter.version`)
+
+Editing the charter means a new version, a new file and a new seal. The existing vault comes along:
+
+```bash
+# after hygiene / sign-charter / seal-charter on charters/ZIGGURAT_v1.0.1.txt
+cargo run -p hcc-xtask -- charter-version charters/ZIGGURAT_v1.0.1.txt --to-version 1.0.1 --vault eduba_vault.db
+cargo run -p hcc-daemon -- --charter charters/ZIGGURAT_v1.0.1.txt --db eduba_vault.db
+```
+
+`charter-version` refuses unless the new charter verifies against the baked royal seal, was signed by
+the genesis operator key, and raises the version. It appends one signed `genesis.charter.version` row;
+from then on only the new charter boots that vault, and BATON replays older traces under the charter
+they were recorded with.
 
 ## Target layout (crates appear here only once they compile)
 

@@ -310,6 +310,46 @@ async fn vault_from_another_charter_reports_no_genesis() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn bumped_charter_keeps_the_vault_and_retires_the_old_one() -> TestResult {
+    let db = scratch_db("bump")?;
+    let v100 = sealed_constants(b"first charter\n");
+    let v101 = sealed_constants(SAMPLE);
+    let first = CharterStatus::from_bytes(b"first charter\n".to_vec(), Some(&v100));
+    assert!(SteleBoot::boot(&db, &first, v100.royal.as_ref()).genesis);
+    {
+        let mut stele = hcc_iedb_stele::Stele::open(&db)?;
+        let charter = hcc_seal::SystemCharter::load(SAMPLE.to_vec())
+            .verify(Some(&v101))
+            .map_err(|r| r.error.to_string())?;
+        let royal = v101.royal.ok_or("no royal seal")?;
+        stele.record_charter_version(&charter, &royal, "1.0.1")?;
+    }
+    let bumped = CharterStatus::from_bytes(SAMPLE.to_vec(), Some(&v101));
+    let stele = SteleBoot::boot(&db, &bumped, v101.royal.as_ref());
+    assert!(stele.genesis, "{}", stele.note);
+    assert!(stele.ledgers.is_some(), "{}", stele.note);
+    assert!(
+        stele
+            .note
+            .contains("charter v1.0.1 (2 version(s) in lineage)"),
+        "{}",
+        stele.note
+    );
+    drop(stele);
+    let stele = SteleBoot::boot(&db, &first, v100.royal.as_ref());
+    assert!(
+        !stele.genesis,
+        "the retired charter must not boot: {}",
+        stele.note
+    );
+    drop(stele);
+    if let Some(dir) = db.parent() {
+        std::fs::remove_dir_all(dir)?;
+    }
+    Ok(())
+}
+
 async fn with_origin(
     method: &str,
     origin: Option<&str>,
