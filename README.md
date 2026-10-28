@@ -14,6 +14,7 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `crates/hcc-seal/src/baked.rs` | Length + digest baked; **no royal seal yet**, so the charter stays Unsealed |
 | `hcc-iedb-stele` | Append-only hash-chained stele in SQLite WAL; abort triggers; genesis embeds the charter |
 | `hcc-krypt` | RMK → KEK (BLAKE3 `derive_key`, context `HCC-KRYPT-STRATUM-v2`) → DEK (ChaCha20-Poly1305 wrap) → FEK (wrapped under DEK; AES-256-GCM data); random nonces; zeroize on drop. Not wired into the daemon yet |
+| `hcc-neural` | M01 Neural Highway: `vault.store.lesson` appends a lesson plus an `HCC-LESSON-v1` stele row (hashes only); `neural.index.upsert` stores per-model f32 vectors from the runner's `/api/embed` on 127.0.0.1:11434; `neural.retrieve.lesson` is exact brute-force cosine top-k. Runner down is a typed error. Not wired into the daemon or Vanguard yet; lesson text is not encrypted yet |
 | `hcc-zerotrace` | M08 Zero-Trace: `hcc_krypt_keyring` in the vault file holds wrapped envelopes only; `Keyring::destroy` crypto-shreds one key (secure_delete, then WAL TRUNCATE) and appends an `HCC-ZEROTRACE-v1` deletion certificate to the stele in the same transaction. Scope is this vault file; no claims about flash wear-levelling. Not wired into the daemon or Vanguard yet |
 | `hcc-baton` | `hcc_baton_trace_ledger`: frozen envelope, hash-chained traces, record + replay, abort triggers |
 | `hcc-vanguard` | 35-entry job table with JSON handoff; `scribe.stele.append`, `seed.scaffold.emit` and `inspect.gate.validate` live; the rest `Err(Unimplemented)` |
@@ -114,6 +115,7 @@ ziggurat/
 │   ├── hcc-seed/                   # T2 writes real crate files
 │   ├── hcc-wasi-healer/            # T2 fuel sandbox + fixture runner
 │   ├── hcc-vanguard/               # T2 job table; 3 live, rest Err
+│   ├── hcc-neural/                 # T2 M01 lessons + loopback embeddings + cosine retrieve
 │   └── hcc-xtask/                  # T2 seal-charter, freeze-vendor, gates
 ├── src-tauri/                      # Faraday frame; hosts daemon task
 ├── origami/dist/                   # checked-in cockpit; no runtime npm
