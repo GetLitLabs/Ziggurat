@@ -428,3 +428,42 @@ async fn live_runner_round_trip() -> TestResult {
     drop(store);
     Ok(())
 }
+
+#[test]
+fn upsert_vectors_is_all_or_nothing() -> Result<(), Box<dyn std::error::Error>> {
+    let scratch = std::env::temp_dir().join(format!("hcc-neural-batch-{}", std::process::id()));
+    if scratch.exists() {
+        std::fs::remove_dir_all(&scratch)?;
+    }
+    std::fs::create_dir_all(&scratch)?;
+    let path = scratch.join("eduba_vault.db");
+    {
+        let mut store = LessonStore::open(&path)?;
+        let a = store.store("vault.store.lesson", "a", "first body", &[1u8; 32])?;
+        let b = store.store("vault.store.lesson", "b", "second body", &[1u8; 32])?;
+        let good = [1.0f32, 0.0];
+        let bad: [f32; 0] = [];
+        assert!(matches!(
+            store.upsert_vectors("m", &[(a.lesson_id, &good), (b.lesson_id, &bad)]),
+            Err(NeuralError::BadVector)
+        ));
+        assert_eq!(
+            store.pending("m")?.len(),
+            2,
+            "nothing written on a bad batch"
+        );
+        assert!(matches!(
+            store.upsert_vectors("m", &[(a.lesson_id, &good), (99, &good)]),
+            Err(NeuralError::NoLesson(99))
+        ));
+        assert_eq!(
+            store.pending("m")?.len(),
+            2,
+            "rolled back on a missing lesson"
+        );
+        store.upsert_vectors("m", &[(a.lesson_id, &good), (b.lesson_id, &good)])?;
+        assert!(store.pending("m")?.is_empty());
+    }
+    std::fs::remove_dir_all(&scratch)?;
+    Ok(())
+}

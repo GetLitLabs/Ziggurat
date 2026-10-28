@@ -1495,8 +1495,13 @@ dependencies = [
  "ed25519-dalek",
  "hcc-baton",
  "hcc-iedb-stele",
+ "hcc-krypt",
+ "hcc-neural",
  "hcc-seal",
+ "hcc-seed",
  "hcc-types",
+ "hcc-vanguard",
+ "hcc-zerotrace",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -1505,6 +1510,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
+ "zeroize",
 ]
 
 [[package]]
@@ -1571,15 +1577,21 @@ version = "1.0.0"
 name = "hcc-vanguard"
 version = "1.0.0"
 dependencies = [
+ "axum",
  "blake3",
  "ed25519-dalek",
  "hcc-iedb-stele",
+ "hcc-krypt",
+ "hcc-neural",
  "hcc-seal",
  "hcc-seed",
  "hcc-types",
+ "hcc-wasi-healer",
  "hcc-xtask",
+ "hcc-zerotrace",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]

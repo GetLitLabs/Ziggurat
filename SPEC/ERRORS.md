@@ -52,3 +52,32 @@ Body is `{"error": "<value>"}`. Nothing is appended to BATON or the stele on any
 | `runner response has no message.content` | 502 | runner reply is not Ollama `/api/chat` JSON |
 | `ledger lock poisoned` | 500 | an earlier panic poisoned the ledger lock |
 | `ledger append failed` | 500 | SQLite refused the BATON or stele append, including a vault still locked by another connection after the 5 s busy timeout (detail in the daemon log) |
+| `request from a non-cockpit origin refused` | 403 | a non-GET request carries an `Origin` header that is not one of the cockpit's Tauri origins (any route; requests with no `Origin`, such as curl, pass) |
+
+## `POST /v1/ramgenie/vanguard` errors
+
+Body is `{"error": "<value>"}`. A refused or failed job appends nothing to BATON or the stele
+(a job that changes the vault, such as `krypt.stratum.init`, commits its own row only on success).
+The guards share the dispatch strings above: `non-loopback peer refused` (403),
+`dispatch body exceeds 1048576 bytes` (413), `charter not royal-sealed; dispatch forbidden` (403),
+`stele or BATON ledger not open; dispatch held` (503), `ledger lock poisoned` and
+`ledger append failed` (500), `request from a non-cockpit origin refused` (403). Two strings are the route's own:
+
+| Value | HTTP | When |
+|---|---|---|
+| `job body must be JSON {job, bsmc_namespace, terrace_level, payload}` | 400 | malformed JSON, missing or unknown fields |
+| `daemon booted without a vault path; jobs held` | 503 | the daemon state has no vault path (library use without `with_factory`) |
+
+Every other refusal is the job's own `VanguardError` text, which names the job and the reason.
+The HTTP status follows the error (`hcc_daemon::vanguard_wire::job_status`):
+
+| Status | Errors |
+|---|---|
+| 400 | unknown job, bad namespace, terrace outside 1..=5, bad payload, bad key label, bad lesson title/body/model/k |
+| 404 | `key_id` not in the keyring |
+| 409 | key already shredded, duplicate lesson body, seed crate already exists |
+| 422 | the healer refused the module (fuel, memory, imports, trap) or seed refused the blueprint |
+| 501 | the job is TYPED (`<job> is TYPED: unimplemented in v1.0.0`) |
+| 502 | the runner on 127.0.0.1:11434 did not embed (unreachable, timeout, non-2xx, wrong vector count) |
+| 503 | the job needs the workspace, the vault file or the Krypt RMK and the daemon has none |
+| 500 | stele, keyring, lesson store or file read failed |

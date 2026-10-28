@@ -92,3 +92,31 @@ fn seal_refuses_signature_over_other_bytes() -> TestResult {
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+#[test]
+fn krypt_rmk_writes_32_fresh_bytes_and_never_overwrites() -> TestResult {
+    let dir = scratch("rmk")?;
+    let path = dir.join("keys").join("krypt.rmk");
+    hcc_xtask::krypt_rmk(&path)?;
+    let first = std::fs::read(&path)?;
+    assert_eq!(first.len(), 32);
+    assert!(first.iter().any(|&b| b != 0));
+    assert!(
+        hcc_xtask::krypt_rmk(&path).is_err(),
+        "must refuse to overwrite"
+    );
+    assert_eq!(std::fs::read(&path)?, first);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path)?.permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let other = dir.join("other.rmk");
+    hcc_xtask::krypt_rmk(&other)?;
+    assert_ne!(std::fs::read(&other)?, first);
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}

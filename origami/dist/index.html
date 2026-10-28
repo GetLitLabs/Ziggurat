@@ -34,6 +34,22 @@
       <div class="error" id="status-error" hidden></div>
       <dl class="telemetry" id="telemetry"></dl>
     </section>
+    <form id="job-form" class="panel" autocomplete="off">
+      <div class="panel-head">
+        <h2>Vanguard job <code>POST /v1/ramgenie/vanguard</code></h2>
+        <span class="muted" id="job-table-note">job table not loaded</span>
+      </div>
+      <div class="error" id="job-table-error" hidden></div>
+      <div class="job-grid">
+        <label>Job <select id="job-name"></select></label>
+        <label>Namespace <input id="job-namespace" maxlength="128" required></label>
+        <label>Terrace <select id="job-terrace"></select></label>
+      </div>
+      <label>Payload (JSON) <textarea id="job-payload" rows="5" spellcheck="false"></textarea></label>
+      <button type="submit" id="job-btn">Run job</button>
+      <p class="muted" id="job-note"></p>
+      <div class="error" id="job-error" hidden></div>
+    </form>
   </main>
 
   <aside class="right">

@@ -8,9 +8,10 @@
 #![forbid(unsafe_code)]
 
 pub mod ramgenie;
+pub mod vanguard_wire;
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -25,6 +26,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use hcc_baton::BatonLedger;
 use hcc_iedb_stele::{Genesis, Stele};
+use hcc_krypt::RootMasterKey;
 use hcc_seal::{digest_hex, RoyalSeal, RoyalSealed, SealConstants, SealError, SystemCharter};
 use hcc_types::{BsmcNamespace, TerraceLevel};
 use serde::{Deserialize, Serialize};
@@ -37,6 +39,10 @@ pub const ACCORDION_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr
 pub const RUNNER_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 11434));
 pub const DEFAULT_CHARTER_PATH: &str = "charters/ZIGGURAT_v1.0.0.txt";
 pub const DEFAULT_DB_PATH: &str = "eduba_vault.db";
+/// Operator Krypt RMK (32 raw bytes, never in git). Absent: `krypt.stratum.init` is refused.
+pub const DEFAULT_RMK_PATH: &str = "keys/krypt.rmk";
+/// Workspace that seed, gates and the healer read or write.
+pub const DEFAULT_WORKSPACE: &str = ".";
 /// `seal_error` when the charter file cannot be read. The path and io error go to the boot log only.
 pub const CHARTER_UNREADABLE: &str = "charter file unreadable";
 /// Largest dispatch body accepted. Larger bodies get `dispatch_error::TOO_LARGE` as JSON.
@@ -122,6 +128,8 @@ pub struct Ledgers {
     pub baton: BatonLedger,
     /// Operator pubkey recorded on every stele row this daemon writes.
     pub operator_pubkey: [u8; 32],
+    /// The royal seal the vault was opened under (pubkey and charter signature; no secret).
+    pub royal: RoyalSeal,
 }
 
 /// Outcome of opening the vault at boot.
@@ -191,6 +199,7 @@ impl SteleBoot {
                     stele,
                     baton,
                     operator_pubkey: royal.operator_pubkey,
+                    royal: *royal,
                 }),
                 note: format!("{stele_note}; BATON replayed {traces} trace(s)"),
             },
@@ -212,6 +221,44 @@ pub struct AccordionSwitchboardState {
     pub runner_addr: SocketAddr,
     /// In-process counters for `GET /v1/ziggurat/health`. Never leave the machine.
     pub health: HealthLog,
+    /// What Vanguard jobs may reach: the vault file, the workspace, the RMK.
+    pub factory: Factory,
+}
+
+/// Paths and keys the Vanguard jobs run against. Empty by default: jobs that need a missing
+/// piece are refused by name, never faked.
+#[derive(Default)]
+pub struct Factory {
+    /// The vault file the ledgers were opened from.
+    pub vault_path: Option<PathBuf>,
+    pub workspace_root: Option<PathBuf>,
+    /// Krypt stratum I. Zeroized on drop.
+    pub rmk: Option<RootMasterKey>,
+}
+
+/// Read the operator RMK file: `Ok(None)` when absent, `Err` when present but not 32 bytes.
+pub fn load_rmk(path: &Path) -> Result<Option<RootMasterKey>, String> {
+    use zeroize::Zeroize;
+    let mut bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(format!("cannot read {}: {err}", path.display())),
+    };
+    let key: Result<[u8; hcc_krypt::KEY_LEN], _> = bytes.as_slice().try_into();
+    let len = bytes.len();
+    bytes.zeroize();
+    match key {
+        Ok(mut key) => {
+            let rmk = RootMasterKey::from_bytes(key);
+            key.zeroize();
+            Ok(Some(rmk))
+        }
+        Err(_) => Err(format!(
+            "{} is {len} bytes; an RMK is exactly {} raw bytes",
+            path.display(),
+            hcc_krypt::KEY_LEN
+        )),
+    }
 }
 
 impl AccordionSwitchboardState {
@@ -227,7 +274,13 @@ impl AccordionSwitchboardState {
             ledgers: ledgers.map(Mutex::new),
             runner_addr,
             health: HealthLog::new(),
+            factory: Factory::default(),
         }
+    }
+
+    pub fn with_factory(mut self, factory: Factory) -> Self {
+        self.factory = factory;
+        self
     }
 }
 
@@ -237,6 +290,9 @@ pub struct HealthLog {
     dispatches_sealed: AtomicU64,
     dispatches_refused: AtomicU64,
     last_dispatch_error: Mutex<Option<String>>,
+    jobs_sealed: AtomicU64,
+    jobs_refused: AtomicU64,
+    last_job_error: Mutex<Option<String>>,
 }
 
 impl HealthLog {
@@ -246,6 +302,20 @@ impl HealthLog {
             dispatches_sealed: AtomicU64::new(0),
             dispatches_refused: AtomicU64::new(0),
             last_dispatch_error: Mutex::new(None),
+            jobs_sealed: AtomicU64::new(0),
+            jobs_refused: AtomicU64::new(0),
+            last_job_error: Mutex::new(None),
+        }
+    }
+
+    fn job_sealed(&self) {
+        self.jobs_sealed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn job_refused(&self, error: &str) {
+        self.jobs_refused.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut last) = self.last_job_error.lock() {
+            *last = Some(error.to_owned());
         }
     }
 
@@ -285,6 +355,9 @@ pub struct DaemonHealth {
     pub dispatches_sealed: u64,
     pub dispatches_refused: u64,
     pub last_dispatch_error: Option<String>,
+    pub jobs_sealed: u64,
+    pub jobs_refused: u64,
+    pub last_job_error: Option<String>,
     pub loopback_peer: String,
 }
 
@@ -332,7 +405,12 @@ async fn daemon_health(
             format!("non-loopback peer {peer} refused"),
         ));
     }
-    let heads = state.ledgers.as_ref().and_then(ledger_heads);
+    // Read on a blocking thread: a long ledger job may hold the vault lock.
+    let reader = Arc::clone(&state);
+    let heads = tokio::task::spawn_blocking(move || reader.ledgers.as_ref().and_then(ledger_heads))
+        .await
+        .ok()
+        .flatten();
     let (stele_rows, stele_head, trace) = match heads {
         Some(h) => (Some(h.stele_rows), h.stele_head_hex, h.trace),
         None => (None, None, None),
@@ -353,6 +431,13 @@ async fn daemon_health(
         dispatches_refused: health.dispatches_refused.load(Ordering::Relaxed),
         last_dispatch_error: health
             .last_dispatch_error
+            .lock()
+            .ok()
+            .and_then(|last| last.clone()),
+        jobs_sealed: health.jobs_sealed.load(Ordering::Relaxed),
+        jobs_refused: health.jobs_refused.load(Ordering::Relaxed),
+        last_job_error: health
+            .last_job_error
             .lock()
             .ok()
             .and_then(|last| last.clone()),
@@ -462,8 +547,9 @@ pub mod dispatch_error {
     pub const NO_LEDGER: &str = "stele or BATON ledger not open; dispatch held";
     pub const LEDGER_LOCK: &str = "ledger lock poisoned";
     pub const LEDGER_WRITE: &str = "ledger append failed";
+    pub const FOREIGN_ORIGIN: &str = "request from a non-cockpit origin refused";
 
-    pub const ALL: [&str; 11] = [
+    pub const ALL: [&str; 12] = [
         NON_LOOPBACK,
         TOO_LARGE,
         BAD_JSON,
@@ -475,6 +561,7 @@ pub mod dispatch_error {
         NO_LEDGER,
         LEDGER_LOCK,
         LEDGER_WRITE,
+        FOREIGN_ORIGIN,
     ];
 }
 
@@ -536,7 +623,7 @@ async fn ramgenie_dispatch(
 }
 
 async fn dispatch_sealed(
-    state: &AccordionSwitchboardState,
+    state: &Arc<AccordionSwitchboardState>,
     peer: SocketAddr,
     body: Result<Bytes, BytesRejection>,
 ) -> Reply<DispatchSealed> {
@@ -566,9 +653,9 @@ async fn dispatch_sealed(
     let CharterStatus::Sealed(charter) = &state.charter else {
         return Err(refuse(StatusCode::FORBIDDEN, e::UNSEALED.into()));
     };
-    let Some(ledgers) = &state.ledgers else {
+    if state.ledgers.is_none() {
         return Err(refuse(StatusCode::SERVICE_UNAVAILABLE, e::NO_LEDGER.into()));
-    };
+    }
 
     let output = ramgenie::generate(
         state.runner_addr,
@@ -580,38 +667,54 @@ async fn dispatch_sealed(
     .await
     .map_err(|err| refuse(StatusCode::BAD_GATEWAY, err.message()))?;
 
-    let mut ledgers = ledgers
-        .lock()
-        .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_LOCK.into()))?;
-    let write_failed = |detail: String| {
-        eprintln!("hcc-daemon: {}: {detail}", e::LEDGER_WRITE);
-        refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_WRITE.into())
-    };
-    // The BATON trace and its stele row commit in one transaction on the vault file:
-    // both land or neither does.
-    let pubkey = ledgers.operator_pubkey;
+    let holder = Arc::clone(state);
+    let charter_digest = *charter.digest();
+    let namespace_text = namespace.as_str().to_owned();
+    let prompt = request.operator_prompt.clone();
     let model = request.model.clone();
-    let (trace, stele_id) = ledgers
-        .baton
-        .record_then(
-            charter.digest(),
-            namespace.as_str(),
-            terrace,
-            request.operator_prompt.as_bytes(),
-            output.as_bytes(),
-            |tx, trace| {
-                let payload = dispatch_payload(
-                    &model,
-                    namespace.as_str(),
-                    terrace,
-                    trace.trace_id,
-                    &digest_hex(&trace.envelope),
-                );
-                hcc_iedb_stele::append_in(tx, "genie.dispatch.local", &payload, &pubkey, None)
-                    .map_err(|err| LedgerWrite(err.to_string()))
-            },
-        )
-        .map_err(|LedgerWrite(detail)| write_failed(detail))?;
+    let response = output.clone();
+    // The ledger write runs on a blocking thread so a long job holding the lock never
+    // parks a tokio worker.
+    let written = tokio::task::spawn_blocking(move || {
+        let ledgers = holder
+            .ledgers
+            .as_ref()
+            .ok_or_else(|| refuse(StatusCode::SERVICE_UNAVAILABLE, e::NO_LEDGER.into()))?;
+        let mut ledgers = ledgers
+            .lock()
+            .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_LOCK.into()))?;
+        let write_failed = |detail: String| {
+            eprintln!("hcc-daemon: {}: {detail}", e::LEDGER_WRITE);
+            refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_WRITE.into())
+        };
+        // The BATON trace and its stele row commit in one transaction on the vault file:
+        // both land or neither does.
+        let pubkey = ledgers.operator_pubkey;
+        ledgers
+            .baton
+            .record_then(
+                &charter_digest,
+                &namespace_text,
+                terrace,
+                prompt.as_bytes(),
+                response.as_bytes(),
+                |tx, trace| {
+                    let payload = dispatch_payload(
+                        &model,
+                        &namespace_text,
+                        terrace,
+                        trace.trace_id,
+                        &digest_hex(&trace.envelope),
+                    );
+                    hcc_iedb_stele::append_in(tx, "genie.dispatch.local", &payload, &pubkey, None)
+                        .map_err(|err| LedgerWrite(err.to_string()))
+                },
+            )
+            .map_err(|LedgerWrite(detail)| write_failed(detail))
+    })
+    .await
+    .map_err(|_| refuse(StatusCode::INTERNAL_SERVER_ERROR, e::LEDGER_LOCK.into()))?;
+    let (trace, stele_id) = written?;
     let envelope_hex = digest_hex(&trace.envelope);
 
     Ok(Json(DispatchSealed {
@@ -636,8 +739,10 @@ impl From<hcc_baton::BatonError> for LedgerWrite {
 }
 
 /// Origins of the Tauri webview that hosts the origami cockpit (Linux/macOS, then Windows).
-/// Only these get CORS headers; every other origin is served without them, so a browser
-/// page elsewhere cannot read the daemon's replies.
+/// Only these get CORS headers, so a browser page elsewhere cannot read the daemon's
+/// replies. A request that carries any other `Origin` and is not a GET is refused before
+/// it reaches a handler: a page cannot make the operator's browser run a job or dispatch
+/// with a "simple" (text/plain) POST. Requests with no `Origin` (curl, the CLI) pass.
 pub const COCKPIT_ORIGINS: [&str; 3] = [
     "tauri://localhost",
     "http://tauri.localhost",
@@ -651,11 +756,14 @@ async fn cockpit_cors(request: Request, next: Next) -> Response {
         .and_then(|o| o.to_str().ok())
         .filter(|o| COCKPIT_ORIGINS.contains(o))
         .map(str::to_owned);
+    let foreign = request.headers().contains_key(header::ORIGIN) && origin.is_none();
     let mut response = if request.method() == Method::OPTIONS {
         match origin {
             Some(_) => StatusCode::NO_CONTENT.into_response(),
             None => StatusCode::FORBIDDEN.into_response(),
         }
+    } else if foreign && request.method() != Method::GET {
+        refuse(StatusCode::FORBIDDEN, dispatch_error::FOREIGN_ORIGIN.into()).into_response()
     } else {
         next.run(request).await
     };
@@ -683,6 +791,12 @@ pub fn router(state: Arc<AccordionSwitchboardState>) -> Router {
             "/v1/ramgenie/dispatch",
             post(ramgenie_dispatch).layer(DefaultBodyLimit::max(DISPATCH_MAX_BODY_BYTES)),
         )
+        .route(
+            "/v1/ramgenie/vanguard",
+            post(vanguard_wire::vanguard_dispatch)
+                .layer(DefaultBodyLimit::max(DISPATCH_MAX_BODY_BYTES)),
+        )
+        .route("/v1/ramgenie/jobs", get(vanguard_wire::job_table))
         .layer(middleware::from_fn(cockpit_cors))
         .with_state(state)
 }
@@ -712,13 +826,67 @@ pub async fn bind_loopback(addr: SocketAddr) -> Result<TcpListener, DaemonError>
     TcpListener::bind(addr).await.map_err(DaemonError::Io)
 }
 
-/// Full boot used by both `hcc-daemon` and the Tauri shell: verify the charter, open the
-/// stele, bind 127.0.0.1:7749 and serve. Every step is logged with `log`.
+/// Where boot reads from. `BootConfig::defaults()` is the repo-root layout.
+#[derive(Debug, Clone)]
+pub struct BootConfig {
+    pub charter_path: PathBuf,
+    pub db_path: PathBuf,
+    pub rmk_path: PathBuf,
+    pub workspace_root: PathBuf,
+}
+
+impl BootConfig {
+    pub fn defaults() -> Self {
+        Self {
+            charter_path: PathBuf::from(DEFAULT_CHARTER_PATH),
+            db_path: PathBuf::from(DEFAULT_DB_PATH),
+            rmk_path: PathBuf::from(DEFAULT_RMK_PATH),
+            workspace_root: PathBuf::from(DEFAULT_WORKSPACE),
+        }
+    }
+
+    /// `--charter`, `--db`, `--rmk`, `--workspace`, each followed by a path.
+    pub fn from_args(args: &[String]) -> Result<Self, String> {
+        let mut config = Self::defaults();
+        let mut it = args.iter();
+        while let Some(flag) = it.next() {
+            let slot = match flag.as_str() {
+                "--charter" => &mut config.charter_path,
+                "--db" => &mut config.db_path,
+                "--rmk" => &mut config.rmk_path,
+                "--workspace" => &mut config.workspace_root,
+                other => return Err(format!("unknown argument {other}")),
+            };
+            *slot = it
+                .next()
+                .map(PathBuf::from)
+                .ok_or_else(|| format!("{flag} needs a path"))?;
+        }
+        Ok(config)
+    }
+}
+
+/// Full boot used by both `hcc-daemon` and the Tauri shell with the default layout.
 pub async fn boot_and_serve(
     charter_path: &Path,
     db_path: &Path,
     log: impl Fn(&str),
 ) -> Result<(), DaemonError> {
+    let config = BootConfig {
+        charter_path: charter_path.to_path_buf(),
+        db_path: db_path.to_path_buf(),
+        ..BootConfig::defaults()
+    };
+    boot_and_serve_with(&config, log).await
+}
+
+/// Full boot: verify the charter, open the stele, load the RMK if present, bind
+/// 127.0.0.1:7749 and serve. Every step is logged with `log`.
+pub async fn boot_and_serve_with(
+    config: &BootConfig,
+    log: impl Fn(&str),
+) -> Result<(), DaemonError> {
+    let (charter_path, db_path) = (&config.charter_path, &config.db_path);
     let charter = CharterStatus::boot(charter_path, hcc_seal::BAKED_SEAL.as_ref());
     log(&format!(
         "charter {}: {}",
@@ -731,6 +899,26 @@ pub async fn boot_and_serve(
     let royal = hcc_seal::BAKED_SEAL.and_then(|baked| baked.royal);
     let stele = SteleBoot::boot(db_path, &charter, royal.as_ref());
     log(&format!("stele: {}", stele.note));
+    let rmk = match load_rmk(&config.rmk_path) {
+        Ok(Some(rmk)) => {
+            log(&format!(
+                "krypt: RMK loaded from {}",
+                config.rmk_path.display()
+            ));
+            Some(rmk)
+        }
+        Ok(None) => {
+            log(&format!(
+                "krypt: no RMK at {}; krypt.stratum.init will be refused",
+                config.rmk_path.display()
+            ));
+            None
+        }
+        Err(err) => {
+            log(&format!("krypt: {err}; krypt.stratum.init will be refused"));
+            None
+        }
+    };
     let listener = bind_loopback(ACCORDION_ADDR).await?;
     if !probe_runner(RUNNER_ADDR).await {
         log(&format!(
@@ -738,13 +926,13 @@ pub async fn boot_and_serve(
         ));
     }
     log(&format!("listening on http://{ACCORDION_ADDR}"));
-    let state = Arc::new(AccordionSwitchboardState::new(
-        charter,
-        stele.genesis,
-        stele.ledgers,
-        RUNNER_ADDR,
-    ));
-    serve(listener, state).await
+    let state = AccordionSwitchboardState::new(charter, stele.genesis, stele.ledgers, RUNNER_ADDR)
+        .with_factory(Factory {
+            vault_path: Some(db_path.clone()),
+            workspace_root: Some(config.workspace_root.clone()),
+            rmk,
+        });
+    serve(listener, Arc::new(state)).await
 }
 
 /// Serve until the process ends.

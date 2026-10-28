@@ -1,6 +1,6 @@
 [package]
 name = "hcc-vanguard"
-description = "T2 Vanguard job table: named jobs with JSON handoff; three live in v1.0.0, the rest Err."
+description = "T2 Vanguard job table: named jobs with JSON handoff; live jobs run real code, TYPED jobs return Err."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,12 +12,18 @@ hcc-seal.workspace = true
 hcc-iedb-stele.workspace = true
 hcc-seed.workspace = true
 hcc-xtask.workspace = true
+hcc-krypt.workspace = true
+hcc-neural.workspace = true
+hcc-wasi-healer.workspace = true
+hcc-zerotrace.workspace = true
+blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-blake3.workspace = true
 ed25519-dalek.workspace = true
+tokio.workspace = true
+axum.workspace = true
 
 [lints]
 workspace = true

@@ -31,7 +31,24 @@ const MODULES = [
   { id: "M12-Origami", terrace: 5, live: true },
 ];
 
-const state = { terrace: 3, module: "M09-RamGenie", sealed: false, dispatching: false };
+// Starting payloads for each live job (INDEX.md §11). They are templates, not results: nothing
+// here is sent until the operator presses Run, and the reply is shown exactly as received.
+const JOB_TEMPLATES = {
+  "scribe.stele.append": { text: "operator note" },
+  "seed.scaffold.emit": { blueprint: { name: "demo-seed", summary: "Seeded from the cockpit", tables: [{ name: "note", columns: [{ name: "body", type: "TEXT" }] }] } },
+  "inspect.gate.validate": { gates: [2, 6, 7, 8, 9, 10, 11] },
+  "krypt.stratum.init": { label: "lessons.v1" },
+  "krypt.stele.verify": {},
+  "vault.store.lesson": { title: "", body: "" },
+  "healer.diagnose.heap": { fixture: "healer_empty.wasm" },
+  "wasi.sandbox.lock": {},
+  "zerotrace.key.destroy": { key_id: "" },
+  "krypt.death.keyDestroy": { key_id: "" },
+  "neural.index.upsert": { model: "nomic-embed-text" },
+  "neural.retrieve.lesson": { model: "nomic-embed-text", query: "", k: 5 },
+};
+
+const state = { terrace: 3, module: "M09-RamGenie", sealed: false, dispatching: false, jobs: [], running: false };
 
 const $ = (id) => document.getElementById(id);
 
@@ -130,6 +147,122 @@ function setSealBadge(kind, text) {
   badge.textContent = text;
 }
 
+function moduleTerrace(job) {
+  const m = MODULES.find((m) => m.id.startsWith(`${job.module}-`));
+  return m ? m.terrace : 3;
+}
+
+function selectedJob() {
+  return state.jobs.find((j) => j.name === $("job-name").value);
+}
+
+function applyJobTemplate() {
+  const job = selectedJob();
+  if (!job) return;
+  $("job-namespace").value = job.name;
+  $("job-terrace").value = String(moduleTerrace(job));
+  $("job-payload").value = JSON.stringify(JOB_TEMPLATES[job.name] || {}, null, 2);
+  updateJobGate();
+}
+
+function updateJobGate() {
+  const job = selectedJob();
+  $("job-btn").disabled = !state.sealed || state.running || !job;
+  $("job-note").textContent = state.running
+    ? "Running… gates, seeds and embeddings can take a while."
+    : !state.sealed
+      ? "Jobs are refused until the daemon reports ROYAL_SEAL_LOCKED."
+      : job && job.status === "TYPED"
+        ? `${job.name} is TYPED: the daemon will answer 501, by design.`
+        : "";
+}
+
+async function loadJobs() {
+  try {
+    const { ok, status, body } = await fetchJson(`${ACCORDION}/v1/ramgenie/jobs`, {}, STATUS_TIMEOUT_MS);
+    if (!ok || !body || !Array.isArray(body.jobs)) {
+      showError("job-table-error", `HTTP ${status}: ${(body && body.error) || "no job table"}`);
+      return;
+    }
+    showError("job-table-error", "");
+    const keep = $("job-name").value;
+    state.jobs = body.jobs;
+    const select = $("job-name");
+    select.replaceChildren();
+    for (const status of ["LIVE", "TYPED"]) {
+      const group = el("optgroup", { label: status });
+      for (const job of body.jobs.filter((j) => j.status === status)) {
+        group.append(el("option", { value: job.name }, `${job.name} · ${job.module}`));
+      }
+      select.append(group);
+    }
+    $("job-table-note").textContent = `${body.live} LIVE · ${body.typed} TYPED`;
+    if (keep && state.jobs.some((j) => j.name === keep)) {
+      select.value = keep;
+      updateJobGate();
+    } else {
+      applyJobTemplate();
+    }
+  } catch (err) {
+    showError("job-table-error", `GET /v1/ramgenie/jobs failed: ${err && err.name === "AbortError" ? "timed out" : err}`);
+  }
+}
+
+function showBaton(body, rows) {
+  $("baton-hex").textContent = body.baton_envelope_blake3_hex;
+  $("baton-hex").dataset.empty = "false";
+  fillList($("dispatch-meta"), rows);
+}
+
+async function runJob(event) {
+  event.preventDefault();
+  if (!state.sealed || state.running) return;
+  showError("job-error", "");
+  let payload;
+  try {
+    payload = JSON.parse($("job-payload").value || "{}");
+  } catch (err) {
+    showError("job-error", `Payload is not JSON: ${err.message}`);
+    return;
+  }
+  const request = {
+    job: $("job-name").value,
+    bsmc_namespace: $("job-namespace").value.trim(),
+    terrace_level: Number($("job-terrace").value),
+    payload,
+  };
+  state.running = true;
+  updateJobGate();
+  try {
+    const { ok, status, body } = await fetchJson(`${ACCORDION}/v1/ramgenie/vanguard`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    if (!ok || !body || body.status !== "JOB_SEALED") {
+      showError("job-error", `HTTP ${status}: ${(body && body.error) || "unexpected reply"}`);
+      return;
+    }
+    showBaton(body, [
+      ["status", body.status],
+      ["job", body.job],
+      ["bsmc_namespace", body.bsmc_namespace],
+      ["terrace_level", body.terrace_level],
+      ["baton_trace_id", body.baton_trace_id],
+      ["stele_row", body.stele_job_row_id],
+      ["result_blake3_hex", body.result_blake3_hex],
+      ["charter_blake3_hex", body.charter_blake3_hex],
+    ]);
+    $("output").textContent = JSON.stringify(body.result, null, 2);
+    $("output").dataset.empty = "false";
+  } catch (err) {
+    showError("job-error", `Job failed before a reply: ${err}`);
+  } finally {
+    state.running = false;
+    updateJobGate();
+  }
+}
+
 function updateDispatchGate() {
   const button = $("dispatch-btn");
   button.disabled = !state.sealed || state.dispatching;
@@ -183,6 +316,8 @@ async function poll() {
     if (seq === pollSeq) {
       $("poll-note").textContent = `polled ${new Date().toLocaleTimeString()} · every 5 s`;
       updateDispatchGate();
+      updateJobGate();
+      if (state.jobs.length === 0 && $("dot-daemon").dataset.ok === "true") loadJobs();
     }
   }
 }
@@ -209,9 +344,7 @@ async function dispatch(event) {
       showError("dispatch-error", `HTTP ${status}: ${(body && body.error) || "unexpected reply"}`);
       return;
     }
-    $("baton-hex").textContent = body.baton_envelope_blake3_hex;
-    $("baton-hex").dataset.empty = "false";
-    fillList($("dispatch-meta"), [
+    showBaton(body, [
       ["status", body.status],
       ["bsmc_namespace", body.bsmc_namespace],
       ["terrace_level", body.terrace_level],
@@ -233,9 +366,14 @@ function init() {
   const select = $("terrace");
   for (const t of TERRACES) select.append(el("option", { value: String(t.level) }, `T${t.level} ${t.name}`));
   select.value = String(state.terrace);
+  const jobTerrace = $("job-terrace");
+  for (const t of TERRACES) jobTerrace.append(el("option", { value: String(t.level) }, `T${t.level} ${t.name}`));
   $("dispatch-form").addEventListener("submit", dispatch);
+  $("job-form").addEventListener("submit", runJob);
+  $("job-name").addEventListener("change", applyJobTemplate);
   render();
   updateDispatchGate();
+  updateJobGate();
   poll();
   setInterval(poll, POLL_MS);
 }

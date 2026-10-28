@@ -169,6 +169,18 @@ pub fn keygen(out_dir: &Path) -> Result<[u8; 32], XtaskError> {
     Ok(pubkey)
 }
 
+/// Write a fresh Krypt RMK (stratum I): 32 raw bytes of OS entropy, mode 0600 on unix, refusing to
+/// overwrite. The daemon reads it with `--rmk` (default `keys/krypt.rmk`, ignored by git).
+/// Losing this file makes every key created under it unopenable; there is no recovery.
+pub fn krypt_rmk(path: &Path) -> Result<(), XtaskError> {
+    let mut rmk = zeroize::Zeroizing::new([0u8; hcc_krypt::KEY_LEN]);
+    getrandom::getrandom(rmk.as_mut()).map_err(XtaskError::Rng)?;
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)?;
+    }
+    write_new_file(path, rmk.as_ref())
+}
+
 /// Sign `BLAKE3(STELE_DOMAIN || charter)` with the operator secret key.
 pub fn sign_charter(charter: &[u8], secret: &[u8; 32]) -> Result<([u8; 32], [u8; 64]), XtaskError> {
     hygiene(charter)?;

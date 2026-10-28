@@ -89,16 +89,16 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 |---|---|---|
 | `accordion.fold.expand` | M02 | LIVE — IPC unfold |
 | `accordion.persist.sqlite` | M02 | LIVE — WAL write |
-| `krypt.stratum.init` | M03 | LIVE |
+| `krypt.stratum.init` | M03 | LIVE — `Keyring::create_recorded` (Vanguard job) |
 | `krypt.ke_key.derive` | M03 | LIVE |
 | `krypt.de_key.wrap` | M03 | LIVE |
 | `krypt.fe_key.encrypt` | M03 | LIVE — FEK wrapped under DEK |
-| `krypt.stele.verify` | M03 | LIVE via `hcc-seal` |
+| `krypt.stele.verify` | M03 | LIVE via `hcc-seal` (Vanguard job) |
 | `vault.ast.parse` | M03 | TYPED |
-| `vault.store.lesson` | M03 | LIVE — `hcc-neural::LessonStore::store` |
-| `healer.diagnose.heap` | M04 | LIVE — fixture wasm |
+| `vault.store.lesson` | M03 | LIVE — `hcc-neural::LessonStore::store` (Vanguard job) |
+| `healer.diagnose.heap` | M04 | LIVE — fixture wasm (Vanguard job) |
 | `healer.patch.apply` | M04 | TYPED |
-| `wasi.sandbox.lock` | M04 | LIVE |
+| `wasi.sandbox.lock` | M04 | LIVE (Vanguard job) |
 | `seed.manifest.init` | M05 | LIVE |
 | `seed.scaffold.emit` | M05 | LIVE — writes files |
 | `ziggurat.daemon.boot` | M05/M02 | LIVE |
@@ -106,8 +106,8 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `polymorph.emit.native` | M06 | TYPED |
 | `genesis.charter.version` | M07 | LIVE — `Stele::record_charter_version`, `lineage` |
 | `chare.provenance.tag` | M07 | TYPED — 67/30/3 metadata |
-| `zerotrace.key.destroy` | M08 | LIVE — `Keyring::destroy` |
-| `krypt.death.keyDestroy` | M08 | LIVE — same function |
+| `zerotrace.key.destroy` | M08 | LIVE — `Keyring::destroy` (Vanguard job) |
+| `krypt.death.keyDestroy` | M08 | LIVE — same function (Vanguard job) |
 | `genie.prompt.seal` | M09 | LIVE |
 | `genie.dispatch.local` | M09 | LIVE |
 | `baton.trace.record` | M10 | LIVE |
@@ -120,8 +120,8 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `origami.fold.assemble` | M12 | LIVE |
 | `sue.cockpit.mount` | M12 | LIVE |
 | `tailor.burst.balance` | M12 | TYPED |
-| `neural.retrieve.lesson` | M01 | LIVE — `hcc_neural::retrieve` |
-| `neural.index.upsert` | M01 | LIVE — `upsert_vector`, `index_pending` |
+| `neural.retrieve.lesson` | M01 | LIVE — embed + `LessonStore::nearest` (Vanguard job, runner) |
+| `neural.index.upsert` | M01 | LIVE — embed + `upsert_vector` (Vanguard job, runner) |
 
 Unknown namespace without a dot → HTTP 400. Known but TYPED → `Err(Unimplemented)`.
 
@@ -142,7 +142,7 @@ The HTTP `module_id` column is the wire: `hcc_daemon::MODULE_IDS` serves exactly
 | `hcc-baton` | T2 | T4 | Record/replay envelopes |
 | `hcc-seed` | T2 | T3 | Write real crate files + tests |
 | `hcc-wasi-healer` | T2 | T2/T4 | Fuel sandbox, empty wasm fixture |
-| `hcc-vanguard` | T2 | T3 | Job table; 3 live jobs |
+| `hcc-vanguard` | T2 | T3 | Job table; live jobs run real code (§11), TYPED jobs return `Err` |
 | `hcc-neural` | T2 | T3 | Lesson store, loopback embeddings, exact cosine retrieve |
 | `hcc-xtask` | T2 | T4 | `seal-charter`, `freeze-vendor`, `gates`, `modelfile` |
 | `ziggurat-desktop` | host | T5 | Tauri 2 shell; spawns daemon |
@@ -222,6 +222,8 @@ ziggurat/
 | GET | `/v1/ziggurat/pillar/{module_id}/status` | `lense.pillar.status` | Loopback peer |
 | GET | `/v1/ziggurat/health` | `lense.daemon.health` | Loopback peer |
 | POST | `/v1/ramgenie/dispatch` | `genie.dispatch.local` | Loopback + sealed charter |
+| POST | `/v1/ramgenie/vanguard` | Vanguard job handoff (§11) | Loopback + sealed charter + open ledgers |
+| GET | `/v1/ramgenie/jobs` | Vanguard table | Loopback peer |
 
 ### 8.1 Status body
 
@@ -243,7 +245,7 @@ Runner down → 502, UI red, no forged BATON.
 
 ### 8.4 Health body
 
-`ziggurat_version`, `charter_sealed`, `stele_genesis`, `ledgers_open`, `stele_rows`, `stele_head_blake3_hex`, `baton_last_trace_id`, `baton_head_envelope_hex`, `runner_up`, `uptime_secs`, `dispatches_sealed`, `dispatches_refused`, `last_dispatch_error`, `loopback_peer`
+`ziggurat_version`, `charter_sealed`, `stele_genesis`, `ledgers_open`, `stele_rows`, `stele_head_blake3_hex`, `baton_last_trace_id`, `baton_head_envelope_hex`, `runner_up`, `uptime_secs`, `dispatches_sealed`, `dispatches_refused`, `last_dispatch_error`, `jobs_sealed`, `jobs_refused`, `last_job_error`, `loopback_peer`
 
 Rows and heads are read from the vault on each request; `null` when the ledgers are not open or the read fails (logged). Counters live in the daemon process and reset at boot. Nothing leaves the machine.
 
@@ -330,8 +332,13 @@ one IMMEDIATE transaction: refuse unless stele row 1 is genesis, append the cert
 `HCC-ZEROTRACE-v1\nkey_id=…\nlabel=…\nenvelope_blake3_hex=…\ndestroyed=…\nmethod=…\nscope=…\n` where
 `envelope_blake3 = BLAKE3(b"HCC-ZEROTRACE-v1\x00" || salt || dek_nonce || wrapped_dek || fek_nonce || wrapped_fek)`.
 Scope is stated in the row: this vault file only; copies taken earlier still hold the envelope. `wal_truncated`
-is false when another connection kept the WAL busy. As Vanguard jobs both M08 markers stay TYPED; the daemon has
-no wipe route yet.
+is false when another connection kept the WAL busy. Both M08 markers are live Vanguard jobs (§11).
+
+`krypt.stratum.init` (`Keyring::create_recorded`) needs the operator RMK: 32 raw bytes in `keys/krypt.rmk`
+(`cargo run -p hcc-xtask -- krypt-rmk`, refuses to overwrite, ignored by git), read by the daemon at boot
+(`--rmk <path>`). Without it the job is refused (503). The keyring row and an `HCC-KRYPT-STRATUM-v1\nkey_id=…\nlabel=…\nenvelope_blake3_hex=…\n`
+stele row commit in one transaction, and only after stele row 1 is genesis. Losing the RMK file makes every key made
+under it unopenable.
 
 Typestate: `SystemCharter<Unsealed>` has no `verified_prompt()`.
 
@@ -341,18 +348,40 @@ Typestate: `SystemCharter<Unsealed>` has no `verified_prompt()`.
 
 “30 Vanguard” = capability table, not 30 processes.
 
-| Job | Status |
-|---|---|
-| `scribe.stele.append` | **LIVE** |
-| `seed.scaffold.emit` | **LIVE** |
-| `inspect.gate.validate` | **LIVE** |
-| All other named jobs | TYPED → `Err(Unimplemented { job })` |
+`hcc-vanguard::VANGUARD_TABLE` holds 35 named jobs: `scribe.stele.append` plus every §4.1 marker except
+`lense.daemon.health` (served as `GET /v1/ziggurat/health`). A row is LIVE only with a
+handler and a test in the same commit; every other row is TYPED → `Err(Unimplemented { job })` (HTTP 501).
+Each LIVE row names its executor: `ledger` (runs with the vault lock held), `runner` (waits on the local runner
+on 127.0.0.1:11434 without the lock) or `daemon` (needs the daemon itself).
+
+| Job | Status | Exec | Payload → result |
+|---|---|---|---|
+| `scribe.stele.append` | **LIVE** | ledger | `{text}` → one stele row under the handoff namespace |
+| `seed.scaffold.emit` | **LIVE** | ledger | `{blueprint}` → crate on disk + `HCC-SEED-v1` row |
+| `inspect.gate.validate` | **LIVE** | ledger | `{gates?}` → verdicts + `HCC-GATES-v1` row |
+| `krypt.stratum.init` | **LIVE** | ledger | `{label}` → `key_id`, envelope fingerprint, `HCC-KRYPT-STRATUM-v1` row; needs the RMK |
+| `krypt.stele.verify` | **LIVE** | ledger | `{}` → full chain recompute, lineage tip = running charter, Ed25519 seal re-verified |
+| `vault.store.lesson` | **LIVE** | ledger | `{title, body}` → lesson under the handoff namespace + `HCC-LESSON-v1` row |
+| `healer.diagnose.heap` | **LIVE** | ledger | `{fixture?}` (a file name in `fixtures/`, default `healer_empty.wasm`) → heap report under `LOCKED` |
+| `wasi.sandbox.lock` | **LIVE** | ledger | `{}` → the `SandboxPolicy::LOCKED` values the healer enforces |
+| `zerotrace.key.destroy` | **LIVE** | ledger | `{key_id}` → crypto-shred + deletion certificate row |
+| `krypt.death.keyDestroy` | **LIVE** | ledger | same function as `zerotrace.key.destroy` |
+| `neural.index.upsert` | **LIVE** | runner | `{model}` → embeds every lesson with no vector for that model |
+| `neural.retrieve.lesson` | **LIVE** | runner | `{model, query, k?}` → exact cosine top-k (k ≤ 64, default 5) |
+| All other named jobs | TYPED | — | `Err(Unimplemented { job })` |
 
 Handoff JSON: `{ "job", "bsmc_namespace", "terrace_level", "payload" }`.
 
-`hcc-vanguard::VANGUARD_TABLE` holds 35 named jobs: the three above plus every §4.1 marker. As a
-*dispatchable job* each §4.1 marker is TYPED (the underlying function may already be LIVE in its
-crate). In this build all three live jobs execute.
+Through M09: `POST /v1/ramgenie/vanguard` takes the handoff from a loopback peer when the charter is royal-sealed
+and the ledgers are open. A job that succeeds is then recorded as one BATON trace (prompt = the handoff bytes as
+received, response = the result JSON bytes returned, namespace and terrace from the handoff) and one
+`genie.dispatch.local` stele row `HCC-VANGUARD-v1\njob=…\nbsmc_namespace=…\nterrace_level=…\nbaton_trace_id=…\nbaton_envelope_hex=…\nresult_blake3_hex=…\n`,
+in one transaction. The reply is `{status: "JOB_SEALED", job, bsmc_namespace, terrace_level, charter_blake3_hex,
+baton_envelope_blake3_hex, baton_trace_id, stele_job_row_id, result_blake3_hex, result}`. A refused or failed job
+records nothing (errors and HTTP codes: `SPEC/ERRORS.md`). The daemon adds `baton_prev_envelope_hex` (the BATON
+head the job was recorded after, `null` for the first trace) to every result, so a job run twice with the same
+input gets two distinct traces. Ledger jobs run and are recorded under one hold of the vault lock on a blocking
+thread. `GET /v1/ramgenie/jobs` serves the table with status and executor. The cockpit's Vanguard panel posts to the same route.
 
 `inspect.gate.validate` payload: `{ "gates": [1..=11, ...] }` (default: all of §14). It runs the same checks as
 `scripts/nine_gates_audit.sh` (a thin wrapper over `cargo run -p hcc-xtask -- gates`, so Windows runs the
@@ -369,7 +398,8 @@ committed demo, and a test fails if those files drift from the blueprint.
 
 `hcc-wasi-healer` (M04) implements `wasi.sandbox.lock` as `SandboxPolicy::LOCKED` (fuel 10,000,000; linear memory
 16 MiB; module ≤ 4 MiB; one instance; `declared_paths` empty, so no host imports are linked and any import is refused)
-and `healer.diagnose.heap` as `diagnose(wasm, &policy)`. Both are crate functions; as Vanguard jobs they remain TYPED.
+and `healer.diagnose.heap` as `diagnose(wasm, &policy)`. Both are live Vanguard jobs; the job reads only plain file
+names under `<workspace>/fixtures/`.
 
 M12 build notes: `src-tauri/` is the `ziggurat-desktop` crate (Tauri 2). It calls `hcc_daemon::boot_and_serve` on
 Tauri's async runtime, so the app and `hcc-daemon` boot identically. `origami/dist` is hand-written HTML/CSS/JS
@@ -420,8 +450,13 @@ cargo clippy --workspace --all-targets -- -D warnings \
   -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic
 cargo tree --workspace
 
-cargo run -p hcc-daemon
+cargo run -p hcc-xtask -- krypt-rmk          # once: keys/krypt.rmk for krypt.stratum.init
+cargo run -p hcc-daemon [-- --charter <path> --db <path> --rmk <path> --workspace <path>]
 curl -s http://127.0.0.1:7749/v1/ziggurat/pillar/M09-RamGenie/status
+curl -s http://127.0.0.1:7749/v1/ramgenie/jobs
+curl -s -X POST http://127.0.0.1:7749/v1/ramgenie/vanguard \
+  -H "Content-Type: application/json" \
+  -d '{"job":"krypt.stele.verify","bsmc_namespace":"krypt.stele.verify","terrace_level":1,"payload":{}}'
 
 curl -s -X POST http://127.0.0.1:7749/v1/ramgenie/dispatch \
   -H "Content-Type: application/json" \
@@ -437,8 +472,8 @@ M01 embeddings: `POST 127.0.0.1:11434/api/embed {"model","input":[..]}` → `{"e
 literal (`hcc_neural::embed` refuses any non-loopback address). `index_pending` embeds lessons with no vector for that
 model; `retrieve` embeds the query and returns the exact top-k (k ≤ 64) by cosine, brute force, ties by lower
 `lesson_id`. Runner down → `EmbedError::Unreachable`, a non-2xx reply → `Status(code, runner text)`, wrong vector
-count → `EmbedCount`; nothing is written on any of them. No ANN index and no latency claims. As Vanguard jobs the three
-markers stay TYPED and the daemon has no lesson route yet. Lesson bodies are stored as plaintext in the vault file;
+count → `EmbedCount`; nothing is written on any of them. No ANN index and no latency claims. The three markers are live Vanguard jobs (§11); the runner jobs open their
+own vault connections only after the runner answers. Lesson bodies are stored as plaintext in the vault file;
 sealing them under a Krypt FEK is not built.
 
 `ziggurat:1.0.0` = `models/ziggurat-1.0.0.Modelfile`, written by `cargo run -p hcc-xtask -- modelfile --from <base>`
