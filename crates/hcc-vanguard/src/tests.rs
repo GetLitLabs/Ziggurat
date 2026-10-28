@@ -59,7 +59,7 @@ fn run_in(
 }
 
 /// The live set is pinned: a job goes live only with a handler and a test in the same commit.
-pub(crate) const LIVE_JOBS: [&str; 12] = [
+pub(crate) const LIVE_JOBS: [&str; 21] = [
     "scribe.stele.append",
     "seed.scaffold.emit",
     "inspect.gate.validate",
@@ -68,8 +68,17 @@ pub(crate) const LIVE_JOBS: [&str; 12] = [
     "vault.store.lesson",
     "healer.diagnose.heap",
     "wasi.sandbox.lock",
+    "seed.manifest.init",
+    "ziggurat.daemon.boot",
+    "genesis.charter.version",
     "zerotrace.key.destroy",
     "krypt.death.keyDestroy",
+    "genie.prompt.seal",
+    "genie.dispatch.local",
+    "baton.trace.record",
+    "baton.state.replay",
+    "lense.pillar.status",
+    "lense.daemon.health",
     "neural.retrieve.lesson",
     "neural.index.upsert",
 ];
@@ -755,5 +764,203 @@ fn index_upsert_embeds_more_than_one_runner_batch() -> TestResult {
     let out = rt.block_on(dispatch_runner(&upsert, &ctx))?;
     assert_eq!(out["indexed"], 300);
     assert!(LessonStore::open(&path)?.pending("m")?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn manifest_init_renders_without_writing() -> TestResult {
+    let root = scratch_workspace("manifest")?;
+    let manifest_before = std::fs::read_to_string(root.join("Cargo.toml"))?;
+    let json = SEED_HANDOFF.replace("seed.scaffold.emit", "seed.manifest.init");
+    let (outcome, stele) = run_in(&json, Some(&root))?;
+    let out = outcome?;
+    assert_eq!(out["member"], "crates/seeded-probe");
+    assert_eq!(out["written"], false);
+    assert_eq!(out["crate_dir_taken"], false);
+    let files = out["files"].as_array().ok_or("no files")?;
+    assert!(files
+        .iter()
+        .any(|f| f["path"] == "crates/seeded-probe/src/lib.rs"));
+    assert!(!root.join("crates/seeded-probe").exists());
+    assert_eq!(
+        std::fs::read_to_string(root.join("Cargo.toml"))?,
+        manifest_before
+    );
+    assert_eq!(stele.len()?, 1, "no row of its own");
+
+    // The digests match what emit then writes.
+    let emitted = run_in(SEED_HANDOFF, Some(&root))?.0?;
+    let emitted_files = emitted["files"].as_array().ok_or("no emitted files")?;
+    for file in emitted_files {
+        let planned = files
+            .iter()
+            .find(|f| f["path"] == file["path"])
+            .ok_or("emit wrote a file the manifest did not list")?;
+        assert_eq!(planned["blake3_hex"], file["blake3_hex"]);
+    }
+    assert_eq!(files.len(), emitted_files.len());
+    let (again, _) = run_in(&json, Some(&root))?;
+    assert_eq!(again?["crate_dir_taken"], true);
+
+    let bad = handoff(
+        "seed.manifest.init",
+        2,
+        json!({ "blueprint": { "name": "hcc-x" } }),
+    );
+    assert!(matches!(
+        run_in(&bad, Some(&root))?.0,
+        Err(VanguardError::Seed(_))
+    ));
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn daemon_boot_confirms_genesis_and_recomputes_the_chain() -> TestResult {
+    let (outcome, stele) = run(&handoff("ziggurat.daemon.boot", 1, json!({})))?;
+    let out = outcome?;
+    assert_eq!(out["genesis"], "PRESENT");
+    assert_eq!(out["genesis_stele_id"], 1);
+    assert_eq!(out["genesis_matches_running_charter"], true);
+    assert_eq!(out["stele_rows_verified"], 1);
+    assert_eq!(out["charter_byte_len"], CHARTER.len());
+    assert_eq!(stele.len()?, 1, "boot on a booted vault appends nothing");
+
+    // A vault opened under another charter is refused, not re-genesised.
+    let (charter, royal) = sealed()?;
+    let mut other = Stele::open_in_memory()?;
+    other.append(
+        hcc_iedb_stele::GENESIS_NAMESPACE,
+        &hcc_iedb_stele::genesis_payload(3, &[7u8; 32]),
+        &royal.operator_pubkey,
+        Some(&royal.signature),
+    )?;
+    let h = Handoff::from_json(&handoff("ziggurat.daemon.boot", 1, json!({})))?;
+    let refused = dispatch(
+        &h,
+        &mut VanguardContext {
+            charter: &charter,
+            royal: &royal,
+            stele: &mut other,
+            workspace_root: None,
+            vault_path: None,
+            rmk: None,
+        },
+    );
+    assert!(matches!(
+        refused,
+        Err(VanguardError::Stele(SteleError::GenesisMismatch))
+    ));
+    Ok(())
+}
+
+#[test]
+fn charter_version_lists_the_lineage_read_only() -> TestResult {
+    let (outcome, stele) = run(&handoff("genesis.charter.version", 1, json!({})))?;
+    let out = outcome?;
+    let epochs = out["epochs"].as_array().ok_or("no epochs")?;
+    assert_eq!(epochs.len(), 1);
+    assert_eq!(epochs[0]["version"], "1.0.0");
+    assert_eq!(epochs[0]["stele_id"], 1);
+    assert_eq!(
+        epochs[0]["charter_blake3_hex"],
+        digest_hex(&charter_digest(CHARTER))
+    );
+    assert_eq!(out["tip_is_running_charter"], true);
+    assert_eq!(stele.len()?, 1);
+    Ok(())
+}
+
+/// `genie.prompt.seal` under the committed charter, sealed with the in-test key.
+fn prompt_seal(
+    root: Option<&Path>,
+) -> Result<Result<Value, VanguardError>, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(repo_root().join("charters/ZIGGURAT_v1.0.0.txt"))?;
+    let key = SigningKey::from_bytes(blake3::hash(b"vanguard in-test key").as_bytes());
+    let digest = charter_digest(&bytes);
+    let royal = RoyalSeal {
+        operator_pubkey: key.verifying_key().to_bytes(),
+        signature: key.sign(&digest).to_bytes(),
+    };
+    let constants = SealConstants {
+        byte_len: bytes.len(),
+        blake3: digest,
+        royal: Some(royal),
+    };
+    let charter = SystemCharter::load(bytes)
+        .verify(Some(&constants))
+        .map_err(|r| r.error.to_string())?;
+    let mut stele = Stele::open_in_memory()?;
+    stele.ensure_genesis(&charter, &royal)?;
+    let h = Handoff::from_json(&handoff("genie.prompt.seal", 1, json!({})))?;
+    Ok(dispatch(
+        &h,
+        &mut VanguardContext {
+            charter: &charter,
+            royal: &royal,
+            stele: &mut stele,
+            workspace_root: root,
+            vault_path: None,
+            rmk: None,
+        },
+    ))
+}
+
+#[test]
+fn prompt_seal_checks_the_committed_modelfile() -> TestResult {
+    let out = prompt_seal(Some(repo_root()))??;
+    assert_eq!(out["royal_seal"], "VERIFIED");
+    assert_eq!(out["charter_byte_len"], 4660);
+    assert_eq!(
+        out["charter_blake3_hex"],
+        "cd380eae2bf4ef632316f7720d0aad77b2b916f86232c394ca2b6192004e3b96"
+    );
+    assert_eq!(out["modelfile"]["present"], true);
+    assert_eq!(out["modelfile"]["from"], "cogito:latest");
+    assert_eq!(out["modelfile"]["matches_sealed_charter"], true);
+
+    // A tampered Modelfile is reported as not matching; a missing one as absent.
+    let root = scratch_workspace("promptseal")?;
+    std::fs::create_dir_all(root.join("models"))?;
+    let committed =
+        std::fs::read_to_string(repo_root().join(hcc_xtask::modelfile::MODELFILE_PATH))?;
+    assert_eq!(prompt_seal(Some(&root))??["modelfile"]["present"], false);
+    std::fs::write(
+        root.join(hcc_xtask::modelfile::MODELFILE_PATH),
+        committed.replacen("SYSTEM", "PARAMETER temperature 0\nSYSTEM", 1),
+    )?;
+    let out = prompt_seal(Some(&root))??;
+    assert_eq!(out["modelfile"]["present"], true);
+    assert_eq!(out["modelfile"]["matches_sealed_charter"], false);
+    assert!(matches!(
+        prompt_seal(None)?,
+        Err(VanguardError::NoWorkspace)
+    ));
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn daemon_jobs_refuse_the_ledger_executor() -> TestResult {
+    for job in [
+        "genie.dispatch.local",
+        "baton.trace.record",
+        "baton.state.replay",
+        "lense.pillar.status",
+        "lense.daemon.health",
+    ] {
+        let (outcome, stele) = run(&handoff(job, 1, json!({})))?;
+        assert!(
+            matches!(
+                outcome,
+                Err(VanguardError::WrongExec {
+                    exec: Exec::Daemon,
+                    ..
+                })
+            ),
+            "{job}"
+        );
+        assert_eq!(stele.len()?, 1);
+    }
     Ok(())
 }

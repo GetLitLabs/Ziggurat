@@ -81,7 +81,7 @@ const fn typed(name: &'static str, module: &'static str) -> VanguardJob {
 }
 
 /// The full table. Add a row here and in `INDEX.md` in the same commit.
-pub const VANGUARD_TABLE: [VanguardJob; 35] = [
+pub const VANGUARD_TABLE: [VanguardJob; 36] = [
     live("scribe.stele.append", "M03", Exec::Ledger),
     live("seed.scaffold.emit", "M05", Exec::Ledger),
     live("inspect.gate.validate", "M11", Exec::Ledger),
@@ -97,21 +97,22 @@ pub const VANGUARD_TABLE: [VanguardJob; 35] = [
     live("healer.diagnose.heap", "M04", Exec::Ledger),
     typed("healer.patch.apply", "M04"),
     live("wasi.sandbox.lock", "M04", Exec::Ledger),
-    typed("seed.manifest.init", "M05"),
-    typed("ziggurat.daemon.boot", "M05"),
+    live("seed.manifest.init", "M05", Exec::Ledger),
+    live("ziggurat.daemon.boot", "M05", Exec::Ledger),
     typed("polymorph.workspace.init", "M06"),
     typed("polymorph.emit.native", "M06"),
-    typed("genesis.charter.version", "M07"),
+    live("genesis.charter.version", "M07", Exec::Ledger),
     typed("chare.provenance.tag", "M07"),
     live("zerotrace.key.destroy", "M08", Exec::Ledger),
     live("krypt.death.keyDestroy", "M08", Exec::Ledger),
-    typed("genie.prompt.seal", "M09"),
-    typed("genie.dispatch.local", "M09"),
-    typed("baton.trace.record", "M10"),
-    typed("baton.state.replay", "M10"),
+    live("genie.prompt.seal", "M09", Exec::Ledger),
+    live("genie.dispatch.local", "M09", Exec::Daemon),
+    live("baton.trace.record", "M10", Exec::Daemon),
+    live("baton.state.replay", "M10", Exec::Daemon),
     typed("konjure.pipeline.init", "M10"),
     typed("curie_monet.verify", "M10"),
-    typed("lense.pillar.status", "M11"),
+    live("lense.pillar.status", "M11", Exec::Daemon),
+    live("lense.daemon.health", "M11", Exec::Daemon),
     typed("origami.fold.assemble", "M12"),
     typed("sue.cockpit.mount", "M12"),
     typed("tailor.burst.balance", "M12"),
@@ -278,6 +279,10 @@ pub fn dispatch(handoff: &Handoff, ctx: &mut VanguardContext<'_>) -> Result<Valu
         "vault.store.lesson" => vault_store_lesson(&namespace, payload, ctx),
         "healer.diagnose.heap" => healer_diagnose_heap(payload, ctx),
         "wasi.sandbox.lock" => Ok(wasi_sandbox_lock()),
+        "seed.manifest.init" => seed_manifest_init(payload, ctx),
+        "ziggurat.daemon.boot" => ziggurat_daemon_boot(ctx),
+        "genesis.charter.version" => genesis_charter_version(ctx),
+        "genie.prompt.seal" => genie_prompt_seal(ctx),
         "zerotrace.key.destroy" | "krypt.death.keyDestroy" => zerotrace_key_destroy(payload, ctx),
         name => Err(VanguardError::Unwired {
             job: name,
@@ -413,6 +418,146 @@ fn seed_scaffold_emit(
         "cargo_check": "passed",
         "stele_id": row.stele_id,
         "blake3_hex": digest_hex(&row.blake3_digest),
+    }))
+}
+
+/// `seed.manifest.init`: payload `{ "blueprint": {...} }`. Parses and validates the blueprint
+/// and renders every file `seed.scaffold.emit` would write, without writing anything.
+/// Reports whether the crate directory is already taken (emit would refuse it).
+fn seed_manifest_init(payload: &Value, ctx: &VanguardContext<'_>) -> Result<Value, VanguardError> {
+    let root = ctx.workspace_root.ok_or(VanguardError::NoWorkspace)?;
+    let blueprint_json = payload.get("blueprint").ok_or(VanguardError::BadPayload(
+        "seed.manifest.init needs {\"blueprint\": object}",
+    ))?;
+    let blueprint =
+        hcc_seed::Blueprint::from_json(&blueprint_json.to_string()).map_err(VanguardError::Seed)?;
+    let files = hcc_seed::render(&blueprint).map_err(VanguardError::Seed)?;
+    let digest = blueprint.digest().map_err(VanguardError::Seed)?;
+    let member = blueprint.member_path();
+    let files: Vec<Value> = files
+        .iter()
+        .map(|file| {
+            json!({
+                "path": format!("{member}/{}", file.path),
+                "bytes": file.contents.len(),
+                "blake3_hex": digest_hex(blake3::hash(file.contents.as_bytes()).as_bytes()),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "name": blueprint.name,
+        "crate_ident": blueprint.crate_ident(),
+        "member": member,
+        "blueprint_blake3_hex": digest_hex(&digest),
+        "tables": blueprint.tables.len(),
+        "files": files,
+        "crate_dir_taken": root.join(&member).exists(),
+        "written": false,
+    }))
+}
+
+/// `ziggurat.daemon.boot`: the boot step that opens the vault, run again on demand.
+/// `Stele::ensure_genesis` re-verifies the royal seal and either confirms the genesis row was
+/// written under the running charter or refuses; the whole chain is then recomputed.
+fn ziggurat_daemon_boot(ctx: &mut VanguardContext<'_>) -> Result<Value, VanguardError> {
+    let genesis = ctx
+        .stele
+        .ensure_genesis(ctx.charter, ctx.royal)
+        .map_err(VanguardError::Stele)?;
+    let (created, row) = match &genesis {
+        hcc_iedb_stele::Genesis::Created(row) => (true, row),
+        hcc_iedb_stele::Genesis::Present(row) => (false, row),
+    };
+    let rows = ctx.stele.verify_chain().map_err(VanguardError::Stele)?;
+    Ok(json!({
+        "ziggurat_version": hcc_iedb_stele::VERSION_TAG,
+        "genesis": if created { "CREATED" } else { "PRESENT" },
+        "genesis_stele_id": row.stele_id,
+        "genesis_blake3_hex": digest_hex(&row.blake3_digest),
+        "genesis_committed_at_utc": row.committed_at_utc,
+        "genesis_matches_running_charter": ctx
+            .stele
+            .genesis_matches(ctx.charter.byte_len(), ctx.charter.digest())
+            .map_err(VanguardError::Stele)?,
+        "charter_byte_len": ctx.charter.byte_len(),
+        "operator_pubkey_hex": digest_hex(&ctx.royal.operator_pubkey),
+        "stele_rows_verified": rows,
+    }))
+}
+
+/// `genesis.charter.version`: the charter lineage the vault has run under, oldest first, and
+/// whether its tip is the running charter. Read-only: recording a new version stays the
+/// operator's `xtask` ceremony (it needs the private key).
+fn genesis_charter_version(ctx: &VanguardContext<'_>) -> Result<Value, VanguardError> {
+    let lineage = ctx.stele.lineage().map_err(VanguardError::Stele)?;
+    let tip_is_running = lineage
+        .last()
+        .is_some_and(|tip| tip.matches(ctx.charter.byte_len(), ctx.charter.digest()));
+    let epochs: Vec<Value> = lineage
+        .iter()
+        .map(|epoch| {
+            json!({
+                "version": epoch.version,
+                "charter_byte_len": epoch.byte_len,
+                "charter_blake3_hex": digest_hex(&epoch.digest),
+                "stele_id": epoch.stele_id,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "epochs": epochs,
+        "tip_is_running_charter": tip_is_running,
+    }))
+}
+
+/// `genie.prompt.seal`: the sealed system prompt every dispatch injects. Re-verifies the
+/// royal seal over the running charter and checks that the committed
+/// `models/ziggurat-1.0.0.Modelfile` is exactly what `xtask modelfile` renders from it
+/// (with the base on its own `FROM` line). A missing Modelfile is reported, not invented.
+fn genie_prompt_seal(ctx: &VanguardContext<'_>) -> Result<Value, VanguardError> {
+    let root = ctx.workspace_root.ok_or(VanguardError::NoWorkspace)?;
+    let charter = ctx.charter;
+    hcc_seal::verify_royal_seal(ctx.royal, charter.digest())
+        .map_err(|e| VanguardError::Stele(SteleError::Seal(e)))?;
+    let path = root.join(hcc_xtask::modelfile::MODELFILE_PATH);
+    let modelfile = match std::fs::read(&path) {
+        Ok(bytes) => {
+            let text = String::from_utf8(bytes)
+                .map_err(|_| VanguardError::Io("Modelfile is not UTF-8".into()))?;
+            let seal = hcc_seal::SealConstants {
+                byte_len: charter.byte_len(),
+                blake3: *charter.digest(),
+                royal: Some(*ctx.royal),
+            };
+            let base = hcc_xtask::modelfile::from_line(&text);
+            let expected = base.map(|base| {
+                hcc_xtask::modelfile::render(
+                    charter.verified_prompt().as_bytes(),
+                    Some(&seal),
+                    base,
+                )
+            });
+            let matches = matches!(&expected, Some(Ok(rendered)) if *rendered == text);
+            json!({
+                "path": hcc_xtask::modelfile::MODELFILE_PATH,
+                "present": true,
+                "from": base,
+                "blake3_hex": digest_hex(blake3::hash(text.as_bytes()).as_bytes()),
+                "matches_sealed_charter": matches,
+            })
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => json!({
+            "path": hcc_xtask::modelfile::MODELFILE_PATH,
+            "present": false,
+        }),
+        Err(err) => return Err(VanguardError::Io(err.to_string())),
+    };
+    Ok(json!({
+        "charter_byte_len": charter.byte_len(),
+        "royal_seal": "VERIFIED",
+        "operator_pubkey_hex": digest_hex(&ctx.royal.operator_pubkey),
+        "model": hcc_xtask::modelfile::MODEL_NAME,
+        "modelfile": modelfile,
     }))
 }
 

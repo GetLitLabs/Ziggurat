@@ -394,7 +394,7 @@ fn ledger_heads(ledgers: &Mutex<Ledgers>) -> Option<LedgerHeads> {
     }
 }
 
-/// `lense.daemon.health`
+/// `lense.daemon.health` (`GET /v1/ziggurat/health`).
 async fn daemon_health(
     State(state): State<Arc<AccordionSwitchboardState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -405,8 +405,17 @@ async fn daemon_health(
             format!("non-loopback peer {peer} refused"),
         ));
     }
+    Ok(Json(health_report(&state, peer).await))
+}
+
+/// The health report, also served as the `lense.daemon.health` Vanguard job. Must not be
+/// called with the vault lock held: it takes the lock itself to read both chain heads.
+pub(crate) async fn health_report(
+    state: &Arc<AccordionSwitchboardState>,
+    peer: SocketAddr,
+) -> DaemonHealth {
     // Read on a blocking thread: a long ledger job may hold the vault lock.
-    let reader = Arc::clone(&state);
+    let reader = Arc::clone(state);
     let heads = tokio::task::spawn_blocking(move || reader.ledgers.as_ref().and_then(ledger_heads))
         .await
         .ok()
@@ -416,7 +425,7 @@ async fn daemon_health(
         None => (None, None, None),
     };
     let health = &state.health;
-    Ok(Json(DaemonHealth {
+    DaemonHealth {
         ziggurat_version: ZIGGURAT_VERSION,
         charter_sealed: state.charter.is_sealed(),
         stele_genesis: state.stele_genesis,
@@ -442,7 +451,7 @@ async fn daemon_health(
             .ok()
             .and_then(|last| last.clone()),
         loopback_peer: peer.to_string(),
-    }))
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -492,6 +501,15 @@ async fn pillar_status(
             format!("non-loopback peer {peer} refused"),
         ));
     }
+    pillar_report(&state, module_id, peer).await.map(Json)
+}
+
+/// One pillar's status, also served as the `lense.pillar.status` Vanguard job.
+pub(crate) async fn pillar_report(
+    state: &AccordionSwitchboardState,
+    module_id: String,
+    peer: SocketAddr,
+) -> Result<PillarStatus, (StatusCode, Json<ErrorBody>)> {
     if !MODULE_IDS.contains(&module_id.as_str()) {
         return Err(refuse(
             StatusCode::NOT_FOUND,
@@ -519,7 +537,7 @@ async fn pillar_status(
             ("UNSEALED", None, None, Some(CHARTER_UNREADABLE.to_string()))
         }
     };
-    Ok(Json(PillarStatus {
+    Ok(PillarStatus {
         module_id,
         status,
         ziggurat_version: ZIGGURAT_VERSION,
@@ -530,7 +548,7 @@ async fn pillar_status(
         stele_genesis: state.stele_genesis,
         loopback_peer: peer.to_string(),
         runner_up: probe_runner(state.runner_addr).await,
-    }))
+    })
 }
 
 /// Dispatch refusals. Fixed strings, listed in `SPEC/ERRORS.md`.
@@ -586,7 +604,7 @@ pub struct DispatchSealed {
     pub model_output: String,
 }
 
-fn model_ok(model: &str) -> bool {
+pub(crate) fn model_ok(model: &str) -> bool {
     (1..=128).contains(&model.len())
         && model
             .chars()
