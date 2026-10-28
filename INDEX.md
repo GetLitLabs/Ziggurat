@@ -115,6 +115,7 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `konjure.pipeline.init` | M10 | TYPED |
 | `curie_monet.verify` | M10 | TYPED |
 | `lense.pillar.status` | M11 | LIVE |
+| `lense.daemon.health` | M11 | LIVE |
 | `inspect.gate.validate` | M11 | LIVE |
 | `origami.fold.assemble` | M12 | LIVE |
 | `sue.cockpit.mount` | M12 | LIVE |
@@ -216,6 +217,7 @@ ziggurat/
 | Method | Path | Marker | Auth/guard |
 |---|---|---|---|
 | GET | `/v1/ziggurat/pillar/{module_id}/status` | `lense.pillar.status` | Loopback peer |
+| GET | `/v1/ziggurat/health` | `lense.daemon.health` | Loopback peer |
 | POST | `/v1/ramgenie/dispatch` | `genie.dispatch.local` | Loopback + sealed charter |
 
 ### 8.1 Status body
@@ -235,6 +237,12 @@ Reject: non-loopback, terrace ∉ 1..=5, namespace without `.`, unsealed charter
 `status`, `bsmc_namespace`, `terrace_level`, `charter_blake3_hex`, `baton_envelope_blake3_hex`, `stele_dispatch_row_id`, `model_output`
 
 Runner down → 502, UI red, no forged BATON.
+
+### 8.4 Health body
+
+`ziggurat_version`, `charter_sealed`, `stele_genesis`, `ledgers_open`, `stele_rows`, `stele_head_blake3_hex`, `baton_last_trace_id`, `baton_head_envelope_hex`, `runner_up`, `uptime_secs`, `dispatches_sealed`, `dispatches_refused`, `last_dispatch_error`, `loopback_peer`
+
+Rows and heads are read from the vault on each request; `null` when the ledgers are not open or the read fails (logged). Counters live in the daemon process and reset at boot. Nothing leaves the machine.
 
 ---
 
