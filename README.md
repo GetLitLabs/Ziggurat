@@ -10,7 +10,7 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `charters/ZIGGURAT_v1.0.0.txt` | Frozen: 4660 bytes, LF only, no BOM |
 | `hcc-types` | `TerraceLevel` (1..=5), `BsmcNamespace` (must contain a dot) |
 | `hcc-seal` | `no_std`; domain-separated BLAKE3, Ed25519 verify, `SystemCharter<Unsealed>` / `<RoyalSealed>` |
-| `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene`, `seed <blueprint.json>`, `gates [--only N,N]` (M11 audit, INDEX §14), `freeze-vendor [--undo]` |
+| `hcc-xtask` | `keygen`, `sign-charter`, `seal-charter`, `hygiene`, `seed <blueprint.json>`, `gates [--only N,N]` (M11 audit, INDEX §14), `freeze-vendor [--undo]`, `modelfile --from <base>` |
 | `crates/hcc-seal/src/baked.rs` | Length + digest baked; **no royal seal yet**, so the charter stays Unsealed |
 | `hcc-iedb-stele` | Append-only hash-chained stele in SQLite WAL; abort triggers; genesis embeds the charter |
 | `hcc-krypt` | RMK → KEK (BLAKE3 `derive_key`, context `HCC-KRYPT-STRATUM-v2`) → DEK (ChaCha20-Poly1305 wrap) → FEK (wrapped under DEK; AES-256-GCM data); random nonces; zeroize on drop. Not wired into the daemon yet |
@@ -102,6 +102,7 @@ ziggurat/
 ├── .gitattributes                  # LF on charters, *.rs, *.Modelfile
 ├── .gitignore
 ├── charters/ZIGGURAT_v1.0.0.txt    # exact SYSTEM bytes; LF; hashed by xtask
+├── models/ziggurat-1.0.0.Modelfile # xtask output: FROM <base> + SYSTEM = sealed charter
 ├── crates/
 │   ├── hcc-types/                  # T1 TerraceLevel, BsmcNamespace, errors
 │   ├── hcc-seal/                   # T1 BLAKE3 + Ed25519 verify
@@ -175,3 +176,19 @@ system message. On success the daemon records a BATON trace, appends a `genie.di
 stele row that embeds the envelope hex, and returns `DISPATCH_SEALED` with
 `baton_envelope_blake3_hex`, `baton_trace_id`, and `stele_dispatch_row_id`. If the runner is down
 the reply is HTTP 502 and nothing is appended. Error strings: `SPEC/ERRORS.md`.
+
+### The `ziggurat:1.0.0` model (optional)
+
+`models/ziggurat-1.0.0.Modelfile` names a base model you already have and sets SYSTEM to the
+sealed charter, byte for byte. xtask writes it only after the charter verifies against the baked
+royal seal, and a test fails if the committed copy drifts. To build the model once the base is pulled:
+
+```bash
+cargo run -p hcc-xtask -- modelfile --from cogito:latest   # or any installed base
+ollama create ziggurat:1.0.0 -f models/ziggurat-1.0.0.Modelfile
+```
+
+The daemon still sends the charter as the system message on every dispatch, so any installed
+model works in the Model field; `ziggurat:1.0.0` just carries the charter when run directly.
+The committed file names `cogito:latest`; regenerating with another `--from` changes only the
+`FROM` and header lines.

@@ -143,7 +143,7 @@ The HTTP `module_id` column is the wire: `hcc_daemon::MODULE_IDS` serves exactly
 | `hcc-seed` | T2 | T3 | Write real crate files + tests |
 | `hcc-wasi-healer` | T2 | T2/T4 | Fuel sandbox, empty wasm fixture |
 | `hcc-vanguard` | T2 | T3 | Job table; 3 live jobs |
-| `hcc-xtask` | T2 | T4 | `seal-charter`, `freeze-vendor`, `gates` |
+| `hcc-xtask` | T2 | T4 | `seal-charter`, `freeze-vendor`, `gates`, `modelfile` |
 | `ziggurat-desktop` | host | T5 | Tauri 2 shell; spawns daemon |
 
 Not members until they compile. No ghost crates in `Cargo.toml`.
@@ -164,6 +164,7 @@ ziggurat/
 ├── .gitattributes
 ├── .gitignore
 ├── charters/ZIGGURAT_v1.0.0.txt
+├── models/ziggurat-1.0.0.Modelfile   ← xtask output only
 ├── crates/hcc-types/
 ├── crates/hcc-seal/src/baked.rs      ← xtask output only
 ├── crates/hcc-iedb-stele/
@@ -405,6 +406,11 @@ cargo tauri build --bundles app
 ```
 
 Optional weather: local Ollama/Candle already listening on `127.0.0.1:11434`. Absence must not crash the daemon.
+
+`ziggurat:1.0.0` = `models/ziggurat-1.0.0.Modelfile`, written by `cargo run -p hcc-xtask -- modelfile --from <base>`
+only after the charter verifies against `BAKED_SEAL` (royal seal required). SYSTEM is the charter byte for byte,
+FROM is an operator-installed base (allow-list `[A-Za-z0-9._:/-]`), no PARAMETER lines. A test pins the committed
+file to the charter. The charter file remains the only prompt source; the daemon still injects it per dispatch.
 
 ---
 
