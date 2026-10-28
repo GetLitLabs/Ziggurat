@@ -17,7 +17,8 @@ Master lookup: [INDEX.md](INDEX.md). If it is not in the index, it is not in v1.
 | `hcc-neural` | M01 Neural Highway: `vault.store.lesson` appends a lesson plus an `HCC-LESSON-v1` stele row (hashes only); `neural.index.upsert` stores per-model f32 vectors from the runner's `/api/embed` on 127.0.0.1:11434; `neural.retrieve.lesson` is exact brute-force cosine top-k. Runner down is a typed error. Live as Vanguard jobs `vault.store.lesson`, `neural.index.upsert`, `neural.retrieve.lesson`; lesson text is not encrypted yet |
 | `hcc-zerotrace` | M08 Zero-Trace: `hcc_krypt_keyring` in the vault file holds wrapped envelopes only; `Keyring::destroy` crypto-shreds one key (secure_delete, then WAL TRUNCATE) and appends an `HCC-ZEROTRACE-v1` deletion certificate to the stele in the same transaction. Scope is this vault file; no claims about flash wear-levelling. Live as Vanguard jobs `krypt.stratum.init` (key + `HCC-KRYPT-STRATUM-v1` row), `zerotrace.key.destroy` and `krypt.death.keyDestroy` |
 | `hcc-baton` | `hcc_baton_trace_ledger`: frozen envelope, hash-chained traces, record + replay, abort triggers |
-| `hcc-vanguard` | 36-entry job table with JSON handoff; 21 live jobs (INDEX §11) run real code, each with an executor (`ledger`, `runner` or `daemon`); the rest `Err(Unimplemented)` |
+| `hcc-polymorph` | M06 Polymorphic Engine: `probe` reads the local `rustc` (version, host, `--print target-cpus`, targets with a std in the sysroot); `emit` runs `cargo build --release --offline` for one workspace package, either host code tuned with `-C target-cpu=<cpu>` or an installed `wasm32-*` target, in `target/polymorph/<label>`, and returns the BLAKE3 of every artifact. A missing target is refused, never downloaded. Live as Vanguard jobs `polymorph.workspace.init` and `polymorph.emit.native`; `xtask polymorph` for wasm |
+| `hcc-vanguard` | 36-entry job table with JSON handoff; 23 live jobs (INDEX §11) run real code, each with an executor (`ledger`, `runner` or `daemon`); the rest `Err(Unimplemented)` |
 | `hcc-seed` | M05 Code A Seed: validated blueprint JSON → `crates/<name>` (Cargo.toml, lib, schema tests, WAL); deterministic; adds the workspace member; `cargo check --offline`, rolled back on failure; never overwrites |
 | `hcc-wasi-healer` | M04: wasmi 2 (pure Rust interpreter) sandbox with a 10M fuel cap, 16 MiB memory cap, one instance and zero host imports (any import, WASI `path_open` included, is refused before instantiation). `diagnose` runs the start section and `_start`, then reports exported memories and fuel used. `fixtures/healer_empty.wasm` is the 8-byte empty module. Live as Vanguard jobs `healer.diagnose.heap` (fixtures only) and `wasi.sandbox.lock`; `healer.patch.apply` stays TYPED |
 | `src-tauri` (`ziggurat-desktop`) | Tauri 2 shell: starts Accordion.be in-process, then shows the cockpit. CSP allows only `'self'` plus `127.0.0.1:7749` and `127.0.0.1:11434`; the window has no Tauri permissions |
@@ -199,6 +200,9 @@ the reply is HTTP 502 and nothing is appended. Error strings: `SPEC/ERRORS.md`.
 
 ```bash
 cargo run -p hcc-xtask -- krypt-rmk     # once; keys/krypt.rmk (32 random bytes, never commit, back it up privately)
+cargo run -p hcc-xtask -- polymorph probe                 # M06: what this toolchain can build
+cargo run -p hcc-xtask -- polymorph native hcc-daemon     # release build tuned for this CPU, offline
+cargo run -p hcc-xtask -- polymorph wasm hcc-types        # offline wasm32 build (needs the target installed)
 curl -s http://127.0.0.1:7749/v1/ramgenie/jobs
 curl -s -X POST http://127.0.0.1:7749/v1/ramgenie/vanguard \
   -H "Content-Type: application/json" \

@@ -28,6 +28,13 @@ pub enum XtaskError {
     GatesFailed(usize),
     Vendor(String),
     Modelfile(&'static str),
+    Polymorph(hcc_polymorph::PolymorphError),
+}
+
+impl From<hcc_polymorph::PolymorphError> for XtaskError {
+    fn from(err: hcc_polymorph::PolymorphError) -> Self {
+        Self::Polymorph(err)
+    }
 }
 
 impl fmt::Display for XtaskError {
@@ -43,6 +50,7 @@ impl fmt::Display for XtaskError {
             Self::GatesFailed(n) => write!(f, "{n} gate(s) failed"),
             Self::Vendor(msg) => write!(f, "freeze-vendor: {msg}"),
             Self::Modelfile(msg) => write!(f, "modelfile: {msg}"),
+            Self::Polymorph(err) => write!(f, "polymorph: {err}"),
         }
     }
 }

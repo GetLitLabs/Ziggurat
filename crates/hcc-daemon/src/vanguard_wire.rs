@@ -108,6 +108,7 @@ pub struct JobSealed {
 /// HTTP status for a job refusal.
 pub fn job_status(err: &VanguardError) -> StatusCode {
     use hcc_neural::NeuralError as N;
+    use hcc_polymorph::PolymorphError as P;
     use hcc_zerotrace::ZeroTraceError as Z;
     match err {
         VanguardError::BadHandoff(_)
@@ -130,11 +131,19 @@ pub fn job_status(err: &VanguardError) -> StatusCode {
         | VanguardError::Neural(N::Duplicate { .. })
         | VanguardError::Seed(hcc_seed::SeedError::AlreadyExists(_)) => StatusCode::CONFLICT,
         VanguardError::Neural(N::Embed(_) | N::EmbedCount { .. }) => StatusCode::BAD_GATEWAY,
-        VanguardError::Healer(_) | VanguardError::Seed(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        VanguardError::Polymorph(P::BadPackage(_) | P::UnknownCpu(_) | P::BadTriple(_)) => {
+            StatusCode::BAD_REQUEST
+        }
+        VanguardError::Healer(_)
+        | VanguardError::Seed(_)
+        | VanguardError::Polymorph(P::TargetMissing(_) | P::Build(_)) => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
         VanguardError::WrongExec { .. }
         | VanguardError::Stele(_)
         | VanguardError::Keyring(_)
         | VanguardError::Neural(_)
+        | VanguardError::Polymorph(_)
         | VanguardError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }

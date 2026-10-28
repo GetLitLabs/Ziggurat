@@ -99,8 +99,8 @@ pub const VANGUARD_TABLE: [VanguardJob; 36] = [
     live("wasi.sandbox.lock", "M04", Exec::Ledger),
     live("seed.manifest.init", "M05", Exec::Ledger),
     live("ziggurat.daemon.boot", "M05", Exec::Ledger),
-    typed("polymorph.workspace.init", "M06"),
-    typed("polymorph.emit.native", "M06"),
+    live("polymorph.workspace.init", "M06", Exec::Ledger),
+    live("polymorph.emit.native", "M06", Exec::Ledger),
     live("genesis.charter.version", "M07", Exec::Ledger),
     typed("chare.provenance.tag", "M07"),
     live("zerotrace.key.destroy", "M08", Exec::Ledger),
@@ -194,6 +194,7 @@ pub enum VanguardError {
     Keyring(ZeroTraceError),
     Neural(NeuralError),
     Healer(HealerError),
+    Polymorph(hcc_polymorph::PolymorphError),
     Io(String),
 }
 
@@ -225,6 +226,7 @@ impl fmt::Display for VanguardError {
             Self::Keyring(err) => write!(f, "keyring: {err}"),
             Self::Neural(err) => write!(f, "neural: {err}"),
             Self::Healer(err) => write!(f, "healer: {err}"),
+            Self::Polymorph(err) => write!(f, "polymorph: {err}"),
             Self::Io(err) => write!(f, "io: {err}"),
         }
     }
@@ -283,6 +285,8 @@ pub fn dispatch(handoff: &Handoff, ctx: &mut VanguardContext<'_>) -> Result<Valu
         "ziggurat.daemon.boot" => ziggurat_daemon_boot(ctx),
         "genesis.charter.version" => genesis_charter_version(ctx),
         "genie.prompt.seal" => genie_prompt_seal(ctx),
+        "polymorph.workspace.init" => polymorph_workspace_init(&namespace, ctx),
+        "polymorph.emit.native" => polymorph_emit_native(&namespace, payload, ctx),
         "zerotrace.key.destroy" | "krypt.death.keyDestroy" => zerotrace_key_destroy(payload, ctx),
         name => Err(VanguardError::Unwired {
             job: name,
@@ -558,6 +562,117 @@ fn genie_prompt_seal(ctx: &VanguardContext<'_>) -> Result<Value, VanguardError> 
         "operator_pubkey_hex": digest_hex(&ctx.royal.operator_pubkey),
         "model": hcc_xtask::modelfile::MODEL_NAME,
         "modelfile": modelfile,
+    }))
+}
+
+/// `polymorph.workspace.init`: probe the local toolchain (M06) and list the workspace packages
+/// it can build, then record what was found as one `HCC-POLYMORPH-PROBE-v1` stele row.
+/// Nothing is installed or fetched.
+fn polymorph_workspace_init(
+    namespace: &BsmcNamespace<'_>,
+    ctx: &mut VanguardContext<'_>,
+) -> Result<Value, VanguardError> {
+    let root = ctx.workspace_root.ok_or(VanguardError::NoWorkspace)?;
+    let probe = hcc_polymorph::probe().map_err(VanguardError::Polymorph)?;
+    let packages: Vec<String> = hcc_polymorph::workspace_packages(root)
+        .map_err(VanguardError::Polymorph)?
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    let record = format!(
+        "HCC-POLYMORPH-PROBE-v1\nrustc={}\nhost={}\nllvm={}\nnative_cpu={}\ntarget_cpus={}\ninstalled_targets={}\npackages={}\n",
+        probe.rustc,
+        probe.host,
+        probe.llvm.as_deref().unwrap_or("?"),
+        probe.native_cpu.as_deref().unwrap_or("?"),
+        probe.target_cpus.len(),
+        probe.installed_targets.join(","),
+        packages.join(","),
+    );
+    let row = ctx
+        .stele
+        .append(
+            namespace.as_str(),
+            record.as_bytes(),
+            &ctx.royal.operator_pubkey,
+            None,
+        )
+        .map_err(VanguardError::Stele)?;
+    Ok(json!({
+        "rustc": probe.rustc,
+        "host": probe.host,
+        "llvm": probe.llvm,
+        "native_cpu": probe.native_cpu,
+        "target_cpus": probe.target_cpus,
+        "installed_targets": probe.installed_targets,
+        "wasm_targets": probe.wasm_targets(),
+        "packages": packages,
+        "stele_id": row.stele_id,
+        "blake3_hex": digest_hex(&row.blake3_digest),
+    }))
+}
+
+/// `polymorph.emit.native`: payload `{ "package": "<workspace member>", "cpu"?: "<name>" }`
+/// (default `native`). Builds the package `--release --offline` for the host tuned with
+/// `-C target-cpu=<cpu>` in `target/polymorph/cpu-<cpu>`, hashes every artifact, and records
+/// one `HCC-POLYMORPH-v1` stele row naming each artifact digest.
+fn polymorph_emit_native(
+    namespace: &BsmcNamespace<'_>,
+    payload: &Value,
+    ctx: &mut VanguardContext<'_>,
+) -> Result<Value, VanguardError> {
+    const WHY: &str = "polymorph.emit.native needs {\"package\": string, \"cpu\"?: string}";
+    let root = ctx.workspace_root.ok_or(VanguardError::NoWorkspace)?;
+    let package = text(payload, "package", WHY)?;
+    let cpu = match payload.get("cpu") {
+        None => "native",
+        Some(cpu) => cpu.as_str().ok_or(VanguardError::BadPayload(WHY))?,
+    };
+    let probe = hcc_polymorph::probe().map_err(VanguardError::Polymorph)?;
+    let target = hcc_polymorph::Target::Native {
+        cpu: cpu.to_owned(),
+    };
+    let report =
+        hcc_polymorph::emit(root, package, &target, &probe).map_err(VanguardError::Polymorph)?;
+    let mut record = format!(
+        "HCC-POLYMORPH-v1\npackage={}\ntriple={}\ncpu={cpu}\nresolved_cpu={}\nrustflags={}\nrustc={}\n",
+        report.package,
+        report.triple,
+        report.resolved_cpu.as_deref().unwrap_or("?"),
+        report.rustflags,
+        probe.rustc,
+    );
+    for artifact in &report.artifacts {
+        record.push_str(&format!(
+            "artifact={} {}\n",
+            artifact.path,
+            digest_hex(&artifact.blake3)
+        ));
+    }
+    let row = ctx
+        .stele
+        .append(
+            namespace.as_str(),
+            record.as_bytes(),
+            &ctx.royal.operator_pubkey,
+            None,
+        )
+        .map_err(VanguardError::Stele)?;
+    let artifacts: Vec<Value> = report
+        .artifacts
+        .iter()
+        .map(|a| json!({ "path": a.path, "bytes": a.bytes, "blake3_hex": digest_hex(&a.blake3) }))
+        .collect();
+    Ok(json!({
+        "package": report.package,
+        "triple": report.triple,
+        "cpu": cpu,
+        "resolved_cpu": report.resolved_cpu,
+        "rustflags": report.rustflags,
+        "target_dir": report.target_dir,
+        "artifacts": artifacts,
+        "stele_id": row.stele_id,
+        "blake3_hex": digest_hex(&row.blake3_digest),
     }))
 }
 

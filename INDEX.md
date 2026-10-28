@@ -75,7 +75,7 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | M03 | `M03-Krypt` | Krypt.DB / Eduba Vault | `krypt.*` `vault.*` | **LIVE** | `hcc-krypt` `hcc-iedb-stele` |
 | M04 | `M04-WasiHealer` | WASI Healer | `wasi.*` `healer.*` | **LIVE** (fixture) | `hcc-wasi-healer` |
 | M05 | `M05-CodeASeed` | Code A Seed | `seed.*` `ziggurat.*` | **LIVE** | `hcc-seed` |
-| M06 | `M06-Polymorph` | Polymorphic Engine | `polymorph.*` | TYPED | xtask target-cpu only |
+| M06 | `M06-Polymorph` | Polymorphic Engine | `polymorph.*` | **LIVE** (target-cpu builds, offline wasm) | `hcc-polymorph` |
 | M07 | `M07-Genesis` | Genesis / Chare | `genesis.*` `chare.*` | **LIVE** (charter versions) / TYPED (chare) | `hcc-iedb-stele` |
 | M08 | `M08-ZeroTrace` | Zero-Trace | `zerotrace.*` `trace.*` | **LIVE** (crate) | `hcc-zerotrace` |
 | M09 | `M09-RamGenie` | RamGenie | `genie.*` | **LIVE** | `hcc-daemon` |
@@ -102,8 +102,8 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 | `seed.manifest.init` | M05 | LIVE — `Blueprint::from_json` + `hcc_seed::render`, writes nothing (Vanguard job) |
 | `seed.scaffold.emit` | M05 | LIVE — writes files |
 | `ziggurat.daemon.boot` | M05/M02 | LIVE — boot; `Stele::ensure_genesis` re-run as a Vanguard job |
-| `polymorph.workspace.init` | M06 | TYPED |
-| `polymorph.emit.native` | M06 | TYPED |
+| `polymorph.workspace.init` | M06 | LIVE — `hcc_polymorph::probe` + workspace packages (Vanguard job) |
+| `polymorph.emit.native` | M06 | LIVE — `hcc_polymorph::emit` for `-C target-cpu` (Vanguard job) |
 | `genesis.charter.version` | M07 | LIVE — `Stele::record_charter_version` (xtask), `lineage` (Vanguard job) |
 | `chare.provenance.tag` | M07 | TYPED — 67/30/3 metadata |
 | `zerotrace.key.destroy` | M08 | LIVE — `Keyring::destroy` (Vanguard job) |
@@ -144,7 +144,8 @@ The HTTP `module_id` column is the wire: `hcc_daemon::MODULE_IDS` serves exactly
 | `hcc-wasi-healer` | T2 | T2/T4 | Fuel sandbox, empty wasm fixture |
 | `hcc-vanguard` | T2 | T3 | Job table; live jobs run real code (§11), TYPED jobs return `Err` |
 | `hcc-neural` | T2 | T3 | Lesson store, loopback embeddings, exact cosine retrieve |
-| `hcc-xtask` | T2 | T4 | `seal-charter`, `freeze-vendor`, `gates`, `modelfile` |
+| `hcc-polymorph` | T2 | T2 | Toolchain probe; `cargo build --release --offline` per target-cpu or installed wasm32 target; BLAKE3 per artifact |
+| `hcc-xtask` | T2 | T4 | `seal-charter`, `freeze-vendor`, `gates`, `modelfile`, `polymorph` |
 | `ziggurat-desktop` | host | T5 | Tauri 2 shell; spawns daemon |
 
 Not members until they compile. No ghost crates in `Cargo.toml`.
@@ -376,6 +377,8 @@ on 127.0.0.1:11434 without the lock) or `daemon` (needs the daemon itself).
 | `baton.state.replay` | **LIVE** | daemon | `{}` → every envelope recomputed against the charter lineage (same check as boot) |
 | `lense.pillar.status` | **LIVE** | daemon | `{module_id}` → the pillar status JSON |
 | `lense.daemon.health` | **LIVE** | daemon | `{}` → the health JSON |
+| `polymorph.workspace.init` | **LIVE** | ledger | `{}` → `rustc -vV`, host, native CPU, `--print target-cpus`, targets with a std in the sysroot, workspace packages + `HCC-POLYMORPH-PROBE-v1` row; installs nothing |
+| `polymorph.emit.native` | **LIVE** | ledger | `{package, cpu?}` (default `native`) → `cargo build --release --offline -p <package>` with `RUSTFLAGS=-C target-cpu=<cpu>` in `target/polymorph/cpu-<cpu>`, BLAKE3 of every artifact + `HCC-POLYMORPH-v1` row. Holds the vault lock for the build (a release daemon build takes minutes) |
 | All other named jobs | TYPED | — | `Err(Unimplemented { job })` |
 
 Handoff JSON: `{ "job", "bsmc_namespace", "terrace_level", "payload" }`.
@@ -459,6 +462,9 @@ cargo clippy --workspace --all-targets -- -D warnings \
 cargo tree --workspace
 
 cargo run -p hcc-xtask -- krypt-rmk          # once: keys/krypt.rmk for krypt.stratum.init
+cargo run -p hcc-xtask -- polymorph probe     # M06: rustc, host, native CPU, installed targets
+cargo run -p hcc-xtask -- polymorph native hcc-daemon [cpu]   # target/polymorph/cpu-<cpu>, offline
+cargo run -p hcc-xtask -- polymorph wasm hcc-types [triple]   # offline wasm; refuses a target that is not installed
 cargo run -p hcc-daemon [-- --charter <path> --db <path> --rmk <path> --workspace <path>]
 curl -s http://127.0.0.1:7749/v1/ziggurat/pillar/M09-RamGenie/status
 curl -s http://127.0.0.1:7749/v1/ramgenie/jobs

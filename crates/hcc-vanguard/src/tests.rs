@@ -59,7 +59,7 @@ fn run_in(
 }
 
 /// The live set is pinned: a job goes live only with a handler and a test in the same commit.
-pub(crate) const LIVE_JOBS: [&str; 21] = [
+pub(crate) const LIVE_JOBS: [&str; 23] = [
     "scribe.stele.append",
     "seed.scaffold.emit",
     "inspect.gate.validate",
@@ -70,6 +70,8 @@ pub(crate) const LIVE_JOBS: [&str; 21] = [
     "wasi.sandbox.lock",
     "seed.manifest.init",
     "ziggurat.daemon.boot",
+    "polymorph.workspace.init",
+    "polymorph.emit.native",
     "genesis.charter.version",
     "zerotrace.key.destroy",
     "krypt.death.keyDestroy",
@@ -962,5 +964,103 @@ fn daemon_jobs_refuse_the_ledger_executor() -> TestResult {
         );
         assert_eq!(stele.len()?, 1);
     }
+    Ok(())
+}
+
+/// One dependency-free member, so a release build takes seconds.
+fn polymorph_workspace(tag: &str) -> Result<std::path::PathBuf, std::io::Error> {
+    let root = scratch_workspace(tag)?;
+    std::fs::create_dir_all(root.join("crates/tiny/src"))?;
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nresolver = \"2\"\nmembers = [\n    \"crates/tiny\",\n]\n",
+    )?;
+    std::fs::write(
+        root.join("crates/tiny/Cargo.toml"),
+        "[package]\nname = \"tiny\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )?;
+    std::fs::write(
+        root.join("crates/tiny/src/lib.rs"),
+        "pub fn add(a: u32, b: u32) -> u32 {\n    a.wrapping_add(b)\n}\n",
+    )?;
+    Ok(root)
+}
+
+#[test]
+fn polymorph_init_probes_and_records_the_toolchain() -> TestResult {
+    let root = polymorph_workspace("polyinit")?;
+    let (outcome, stele) = run_in(
+        &handoff("polymorph.workspace.init", 2, json!({})),
+        Some(&root),
+    )?;
+    let out = outcome?;
+    assert!(out["rustc"]
+        .as_str()
+        .unwrap_or_default()
+        .starts_with("rustc "));
+    assert_eq!(out["packages"], json!(["tiny"]));
+    let host = out["host"].as_str().ok_or("no host")?;
+    assert!(out["installed_targets"]
+        .as_array()
+        .ok_or("no targets")?
+        .iter()
+        .any(|t| t == host));
+    assert_eq!(out["stele_id"], 2);
+    let row = stele.last()?.ok_or("no row")?;
+    let record = String::from_utf8(row.payload)?;
+    assert!(record.starts_with("HCC-POLYMORPH-PROBE-v1\nrustc=rustc "));
+    assert!(record.contains("packages=tiny\n"));
+    assert!(matches!(
+        run(&handoff("polymorph.workspace.init", 2, json!({})))?.0,
+        Err(VanguardError::NoWorkspace)
+    ));
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn polymorph_emit_native_builds_and_records_artifact_digests() -> TestResult {
+    let root = polymorph_workspace("polyemit")?;
+    let (outcome, stele) = run_in(
+        &handoff("polymorph.emit.native", 2, json!({ "package": "tiny" })),
+        Some(&root),
+    )?;
+    let out = outcome?;
+    assert_eq!(out["cpu"], "native");
+    assert_eq!(out["rustflags"], "-C target-cpu=native");
+    assert_eq!(out["target_dir"], "target/polymorph/cpu-native");
+    let rlib = out["artifacts"]
+        .as_array()
+        .ok_or("no artifacts")?
+        .iter()
+        .find(|a| {
+            a["path"]
+                .as_str()
+                .is_some_and(|p| p.ends_with("libtiny.rlib"))
+        })
+        .ok_or("no rlib")?;
+    let bytes = std::fs::read(root.join(rlib["path"].as_str().ok_or("path")?))?;
+    assert_eq!(
+        rlib["blake3_hex"],
+        digest_hex(blake3::hash(&bytes).as_bytes())
+    );
+    let record = String::from_utf8(stele.last()?.ok_or("no row")?.payload)?;
+    assert!(record.starts_with("HCC-POLYMORPH-v1\npackage=tiny\n"));
+    assert!(record.contains(&format!(
+        "artifact={} {}\n",
+        rlib["path"].as_str().ok_or("path")?,
+        digest_hex(blake3::hash(&bytes).as_bytes())
+    )));
+
+    for (payload, refused) in [
+        (json!({ "package": "tiny", "cpu": "no-such-cpu" }), "cpu"),
+        (json!({ "package": "absent" }), "package"),
+        (json!({}), "payload"),
+    ] {
+        let (outcome, stele) = run_in(&handoff("polymorph.emit.native", 2, payload), Some(&root))?;
+        assert!(outcome.is_err(), "{refused} should be refused");
+        assert_eq!(stele.len()?, 1, "a refused build records nothing");
+    }
+    std::fs::remove_dir_all(&root)?;
     Ok(())
 }
