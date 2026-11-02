@@ -453,3 +453,35 @@ fn versions_compare_numerically() {
     assert!(!version_greater("1.0.1 ", "1.0.0"));
     assert!(!version_greater("01.0.1x", "1.0.0"));
 }
+
+#[test]
+fn genesis_is_bound_to_the_operator_key() -> TestResult {
+    let mut stele = Stele::open_in_memory()?;
+    let (a, ra) = sealed(CHARTER_A, b"operator")?;
+    let (a_other, r_other) = sealed(CHARTER_A, b"someone else")?;
+    stele.ensure_genesis(&a, &ra)?;
+    // Same charter bytes, valid royal seal, but a different operator key: refused.
+    assert!(matches!(
+        stele.ensure_genesis(&a_other, &r_other),
+        Err(SteleError::OperatorMismatch)
+    ));
+    assert!(matches!(
+        stele.ensure_genesis(&a, &ra)?,
+        Genesis::Present(_)
+    ));
+    assert_eq!(stele.len()?, 1);
+
+    // A genesis row with the right key but no royal seal is refused too.
+    let mut unsigned = Stele::open_in_memory()?;
+    unsigned.append(
+        GENESIS_NAMESPACE,
+        &genesis_payload(CHARTER_A.len(), &charter_digest(CHARTER_A)),
+        &ra.operator_pubkey,
+        None,
+    )?;
+    assert!(matches!(
+        unsigned.ensure_genesis(&a, &ra),
+        Err(SteleError::OperatorMismatch)
+    ));
+    Ok(())
+}
