@@ -87,39 +87,40 @@ Every dispatch carries `terrace_level: 1..=5`. Outside that range → reject.
 
 | Marker | Module | Status |
 |---|---|---|
-| `accordion.fold.expand` | M02 | LIVE — IPC unfold |
-| `accordion.persist.sqlite` | M02 | LIVE — WAL write |
+| `accordion.fold.expand` | M02 | LIVE — IPC unfold: the daemon's loopback HTTP itself; not a Vanguard job |
+| `accordion.persist.sqlite` | M02 | LIVE — WAL write: every vault write (gate 06); not a Vanguard job |
 | `krypt.stratum.init` | M03 | LIVE — `Keyring::create_recorded` (Vanguard job) |
-| `krypt.ke_key.derive` | M03 | LIVE |
-| `krypt.de_key.wrap` | M03 | LIVE |
-| `krypt.fe_key.encrypt` | M03 | LIVE — FEK wrapped under DEK |
+| `krypt.ke_key.derive` | M03 | LIVE — inside `krypt.stratum.init`; not a separate job (it would hand out key material) |
+| `krypt.de_key.wrap` | M03 | LIVE — inside `krypt.stratum.init`; not a separate job (same reason) |
+| `krypt.fe_key.encrypt` | M03 | LIVE in `hcc-krypt` — FEK wrapped under DEK; job RESERVED (TYPED) until the operator names what it seals |
 | `krypt.stele.verify` | M03 | LIVE via `hcc-seal` (Vanguard job) |
-| `vault.ast.parse` | M03 | TYPED |
+| `vault.ast.parse` | M03 | RESERVED (TYPED) — no definition |
 | `vault.store.lesson` | M03 | LIVE — `hcc-neural::LessonStore::store` (Vanguard job) |
 | `healer.diagnose.heap` | M04 | LIVE — fixture wasm (Vanguard job) |
-| `healer.patch.apply` | M04 | TYPED |
+| `healer.patch.apply` | M04 | RESERVED (TYPED) — no definition |
 | `wasi.sandbox.lock` | M04 | LIVE (Vanguard job) |
 | `seed.manifest.init` | M05 | LIVE — `Blueprint::from_json` + `hcc_seed::render`, writes nothing (Vanguard job) |
 | `seed.scaffold.emit` | M05 | LIVE — writes files |
 | `ziggurat.daemon.boot` | M05/M02 | LIVE — boot; `Stele::ensure_genesis` re-run as a Vanguard job |
 | `polymorph.workspace.init` | M06 | LIVE — `hcc_polymorph::probe` + workspace packages (Vanguard job) |
 | `polymorph.emit.native` | M06 | LIVE — `hcc_polymorph::emit` for `-C target-cpu` (Vanguard job) |
+| `polymorph.emit.wasm` | M06 | LIVE — `hcc_polymorph::emit` for an installed wasm32 target, offline (Vanguard job) |
 | `genesis.charter.version` | M07 | LIVE — `Stele::record_charter_version` (xtask), `lineage` (Vanguard job) |
-| `chare.provenance.tag` | M07 | TYPED — 67/30/3 metadata |
+| `chare.provenance.tag` | M07 | RESERVED (TYPED) — 67/30/3 has no definition; recommended for removal at the v1.0.1 re-seal |
 | `zerotrace.key.destroy` | M08 | LIVE — `Keyring::destroy` (Vanguard job) |
 | `krypt.death.keyDestroy` | M08 | LIVE — same function (Vanguard job) |
 | `genie.prompt.seal` | M09 | LIVE — sealed system prompt; Vanguard job checks seal + Modelfile |
 | `genie.dispatch.local` | M09 | LIVE — `POST /v1/ramgenie/dispatch` and Vanguard job (daemon) |
 | `baton.trace.record` | M10 | LIVE — every dispatch/job; operator traces via Vanguard job (daemon) |
 | `baton.state.replay` | M10 | LIVE — at boot and as a Vanguard job (daemon) |
-| `konjure.pipeline.init` | M10 | TYPED |
-| `curie_monet.verify` | M10 | TYPED |
+| `konjure.pipeline.init` | M10 | RESERVED (TYPED) — "optional" in the brief, no definition |
+| `curie_monet.verify` | M10 | RESERVED (TYPED) — "optional" in the brief, no definition |
 | `lense.pillar.status` | M11 | LIVE — route and Vanguard job (daemon) |
 | `lense.daemon.health` | M11 | LIVE — route and Vanguard job (daemon) |
 | `inspect.gate.validate` | M11 | LIVE |
-| `origami.fold.assemble` | M12 | LIVE |
-| `sue.cockpit.mount` | M12 | LIVE |
-| `tailor.burst.balance` | M12 | TYPED |
+| `origami.fold.assemble` | M12 | LIVE — the checked-in `origami/dist` cockpit; not a Vanguard job |
+| `sue.cockpit.mount` | M12 | LIVE — the Tauri shell mounting the cockpit; not a Vanguard job |
+| `tailor.burst.balance` | M12 | RESERVED (TYPED) — no definition |
 | `neural.retrieve.lesson` | M01 | LIVE — embed + `LessonStore::nearest` (Vanguard job, runner) |
 | `neural.index.upsert` | M01 | LIVE — embed + `upsert_vector` (Vanguard job, runner) |
 
@@ -282,11 +283,13 @@ rows in the reserved namespace `genesis.charter.version` (only `Stele::record_ch
 `royal_seal_sig` on the row is the operator's Ed25519 signature over the new charter digest, under the
 same public key as the genesis row. `Stele::lineage()` = genesis charter, then one epoch per row; each row
 must be canonical, continue from the previous tip, raise `MAJOR.MINOR.PATCH`, and verify. Boot accepts a
-vault only when the lineage tip is the booting charter, so a retired charter can no longer boot. BATON
+vault only when the lineage tip is the booting charter, so a retired charter can no longer boot, and only
+when the genesis row carries the booting royal seal's operator key with a royal seal that verifies under it
+(`SteleError::OperatorMismatch` otherwise: a vault sealed by another operator never boots). BATON
 replay (`replay_lineage`) lets each trace match one lineage charter, never an older one than the trace
 before it. Operator step after re-sealing: `cargo run -p hcc-xtask -- charter-version
 charters/ZIGGURAT_v1.0.1.txt --to-version 1.0.1 --vault <eduba_vault.db>`, then boot the daemon with
-`--charter charters/ZIGGURAT_v1.0.1.txt`. `chare.provenance.tag` (67/30/3) stays TYPED.
+`--charter charters/ZIGGURAT_v1.0.1.txt`. `chare.provenance.tag` (67/30/3) stays RESERVED (SPEC/DEVIATIONS D3).
 
 **`hcc_baton_trace_ledger`**  
 `trace_id`, `prev_digest`, `module_namespace`, `sequence_number`, `terrace_level` CHECK 1–5, `input_state_hash`, `output_state_hash`, `baton_envelope_sig` UNIQUE, `recorded_at_utc`
@@ -349,7 +352,10 @@ Typestate: `SystemCharter<Unsealed>` has no `verified_prompt()`.
 
 “30 Vanguard” = capability table, not 30 processes.
 
-`hcc-vanguard::VANGUARD_TABLE` holds 36 named jobs: `scribe.stele.append` plus every §4.1 marker. A row is LIVE only with a
+`hcc-vanguard::VANGUARD_TABLE` holds 31 named jobs: `scribe.stele.append` plus every §4.1 marker that names callable
+work. Six markers are not jobs: `accordion.*` and `origami.fold.assemble`/`sue.cockpit.mount` describe the daemon and
+cockpit themselves, and `krypt.ke_key.derive`/`krypt.de_key.wrap` are steps inside `krypt.stratum.init` that would
+otherwise hand key material over HTTP. Seven rows are RESERVED: TYPED until the operator defines them. A row is LIVE only with a
 handler and a test in the same commit; every other row is TYPED → `Err(Unimplemented { job })` (HTTP 501).
 Each LIVE row names its executor: `ledger` (runs with the vault lock held), `runner` (waits on the local runner
 on 127.0.0.1:11434 without the lock) or `daemon` (needs the daemon itself).
@@ -378,6 +384,7 @@ on 127.0.0.1:11434 without the lock) or `daemon` (needs the daemon itself).
 | `lense.pillar.status` | **LIVE** | daemon | `{module_id}` → the pillar status JSON |
 | `lense.daemon.health` | **LIVE** | daemon | `{}` → the health JSON |
 | `polymorph.workspace.init` | **LIVE** | ledger | `{}` → `rustc -vV`, host, native CPU, `--print target-cpus`, targets with a std in the sysroot, workspace packages + `HCC-POLYMORPH-PROBE-v1` row; installs nothing |
+| `polymorph.emit.wasm` | **LIVE** | ledger | `{package, triple?}` (default `wasm32-unknown-unknown`) → the same build for an installed wasm32 target in `target/polymorph/<triple>`; a target with no std in the sysroot is refused (`rustup target add` needs the network) |
 | `polymorph.emit.native` | **LIVE** | ledger | `{package, cpu?}` (default `native`) → `cargo build --release --offline -p <package>` with `RUSTFLAGS=-C target-cpu=<cpu>` in `target/polymorph/cpu-<cpu>`, BLAKE3 of every artifact + `HCC-POLYMORPH-v1` row. Holds the vault lock for the build (a release daemon build takes minutes) |
 | All other named jobs | TYPED | — | `Err(Unimplemented { job })` |
 

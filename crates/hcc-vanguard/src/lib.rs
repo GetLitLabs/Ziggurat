@@ -81,15 +81,11 @@ const fn typed(name: &'static str, module: &'static str) -> VanguardJob {
 }
 
 /// The full table. Add a row here and in `INDEX.md` in the same commit.
-pub const VANGUARD_TABLE: [VanguardJob; 36] = [
+pub const VANGUARD_TABLE: [VanguardJob; 31] = [
     live("scribe.stele.append", "M03", Exec::Ledger),
     live("seed.scaffold.emit", "M05", Exec::Ledger),
     live("inspect.gate.validate", "M11", Exec::Ledger),
-    typed("accordion.fold.expand", "M02"),
-    typed("accordion.persist.sqlite", "M02"),
     live("krypt.stratum.init", "M03", Exec::Ledger),
-    typed("krypt.ke_key.derive", "M03"),
-    typed("krypt.de_key.wrap", "M03"),
     typed("krypt.fe_key.encrypt", "M03"),
     live("krypt.stele.verify", "M03", Exec::Ledger),
     typed("vault.ast.parse", "M03"),
@@ -101,6 +97,7 @@ pub const VANGUARD_TABLE: [VanguardJob; 36] = [
     live("ziggurat.daemon.boot", "M05", Exec::Ledger),
     live("polymorph.workspace.init", "M06", Exec::Ledger),
     live("polymorph.emit.native", "M06", Exec::Ledger),
+    live("polymorph.emit.wasm", "M06", Exec::Ledger),
     live("genesis.charter.version", "M07", Exec::Ledger),
     typed("chare.provenance.tag", "M07"),
     live("zerotrace.key.destroy", "M08", Exec::Ledger),
@@ -113,8 +110,6 @@ pub const VANGUARD_TABLE: [VanguardJob; 36] = [
     typed("curie_monet.verify", "M10"),
     live("lense.pillar.status", "M11", Exec::Daemon),
     live("lense.daemon.health", "M11", Exec::Daemon),
-    typed("origami.fold.assemble", "M12"),
-    typed("sue.cockpit.mount", "M12"),
     typed("tailor.burst.balance", "M12"),
     live("neural.retrieve.lesson", "M01", Exec::Runner),
     live("neural.index.upsert", "M01", Exec::Runner),
@@ -286,7 +281,8 @@ pub fn dispatch(handoff: &Handoff, ctx: &mut VanguardContext<'_>) -> Result<Valu
         "genesis.charter.version" => genesis_charter_version(ctx),
         "genie.prompt.seal" => genie_prompt_seal(ctx),
         "polymorph.workspace.init" => polymorph_workspace_init(&namespace, ctx),
-        "polymorph.emit.native" => polymorph_emit_native(&namespace, payload, ctx),
+        "polymorph.emit.native" => polymorph_emit(&namespace, payload, ctx, false),
+        "polymorph.emit.wasm" => polymorph_emit(&namespace, payload, ctx, true),
         "zerotrace.key.destroy" | "krypt.death.keyDestroy" => zerotrace_key_destroy(payload, ctx),
         name => Err(VanguardError::Unwired {
             job: name,
@@ -614,24 +610,45 @@ fn polymorph_workspace_init(
 
 /// `polymorph.emit.native`: payload `{ "package": "<workspace member>", "cpu"?: "<name>" }`
 /// (default `native`). Builds the package `--release --offline` for the host tuned with
-/// `-C target-cpu=<cpu>` in `target/polymorph/cpu-<cpu>`, hashes every artifact, and records
-/// one `HCC-POLYMORPH-v1` stele row naming each artifact digest.
-fn polymorph_emit_native(
+/// `-C target-cpu=<cpu>` in `target/polymorph/cpu-<cpu>`.
+///
+/// `polymorph.emit.wasm`: payload `{ "package": "<workspace member>", "triple"?: "wasm32-..." }`
+/// (default `wasm32-unknown-unknown`). Builds for an installed wasm32 target only; a target
+/// without a std in the sysroot is refused, never fetched.
+///
+/// Both hash every artifact and record one `HCC-POLYMORPH-v1` stele row naming each digest.
+fn polymorph_emit(
     namespace: &BsmcNamespace<'_>,
     payload: &Value,
     ctx: &mut VanguardContext<'_>,
+    wasm: bool,
 ) -> Result<Value, VanguardError> {
-    const WHY: &str = "polymorph.emit.native needs {\"package\": string, \"cpu\"?: string}";
+    const WHY_NATIVE: &str = "polymorph.emit.native needs {\"package\": string, \"cpu\"?: string}";
+    const WHY_WASM: &str =
+        "polymorph.emit.wasm needs {\"package\": string, \"triple\"?: \"wasm32-...\"}";
+    let why = if wasm { WHY_WASM } else { WHY_NATIVE };
     let root = ctx.workspace_root.ok_or(VanguardError::NoWorkspace)?;
-    let package = text(payload, "package", WHY)?;
-    let cpu = match payload.get("cpu") {
-        None => "native",
-        Some(cpu) => cpu.as_str().ok_or(VanguardError::BadPayload(WHY))?,
+    let package = text(payload, "package", why)?;
+    let (key, default) = if wasm {
+        ("triple", "wasm32-unknown-unknown")
+    } else {
+        ("cpu", "native")
     };
+    let choice = match payload.get(key) {
+        None => default,
+        Some(v) => v.as_str().ok_or(VanguardError::BadPayload(why))?,
+    };
+    let target = if wasm {
+        hcc_polymorph::Target::Wasm {
+            triple: choice.to_owned(),
+        }
+    } else {
+        hcc_polymorph::Target::Native {
+            cpu: choice.to_owned(),
+        }
+    };
+    let cpu = if wasm { "-" } else { choice };
     let probe = hcc_polymorph::probe().map_err(VanguardError::Polymorph)?;
-    let target = hcc_polymorph::Target::Native {
-        cpu: cpu.to_owned(),
-    };
     let report =
         hcc_polymorph::emit(root, package, &target, &probe).map_err(VanguardError::Polymorph)?;
     let mut record = format!(
@@ -666,7 +683,7 @@ fn polymorph_emit_native(
     Ok(json!({
         "package": report.package,
         "triple": report.triple,
-        "cpu": cpu,
+        "cpu": (!wasm).then_some(cpu),
         "resolved_cpu": report.resolved_cpu,
         "rustflags": report.rustflags,
         "target_dir": report.target_dir,

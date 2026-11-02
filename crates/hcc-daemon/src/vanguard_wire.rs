@@ -127,7 +127,11 @@ pub fn job_status(err: &VanguardError) -> StatusCode {
             StatusCode::SERVICE_UNAVAILABLE
         }
         VanguardError::Keyring(Z::NotFound(_)) => StatusCode::NOT_FOUND,
-        VanguardError::Keyring(Z::Destroyed { .. })
+        VanguardError::Stele(
+            hcc_iedb_stele::SteleError::GenesisMismatch
+            | hcc_iedb_stele::SteleError::OperatorMismatch,
+        )
+        | VanguardError::Keyring(Z::Destroyed { .. })
         | VanguardError::Neural(N::Duplicate { .. })
         | VanguardError::Seed(hcc_seed::SeedError::AlreadyExists(_)) => StatusCode::CONFLICT,
         VanguardError::Neural(N::Embed(_) | N::EmbedCount { .. }) => StatusCode::BAD_GATEWAY,

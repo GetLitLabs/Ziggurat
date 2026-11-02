@@ -50,6 +50,7 @@ const JOB_TEMPLATES = {
   "genie.prompt.seal": {},
   "polymorph.workspace.init": {},
   "polymorph.emit.native": { package: "hcc-types", cpu: "native" },
+  "polymorph.emit.wasm": { package: "hcc-types", triple: "wasm32-unknown-unknown" },
   "genie.dispatch.local": { model: "ziggurat:1.0.0", operator_prompt: "" },
   "baton.trace.record": { input: "", output: "" },
   "baton.state.replay": {},

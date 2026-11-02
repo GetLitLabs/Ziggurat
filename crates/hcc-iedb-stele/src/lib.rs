@@ -123,6 +123,9 @@ pub enum SteleError {
     },
     /// The vault is already on this charter.
     AlreadyCurrent,
+    /// The genesis row was written by another operator key than the running royal seal's,
+    /// or its royal seal does not verify under that key.
+    OperatorMismatch,
 }
 
 impl fmt::Display for SteleError {
@@ -151,6 +154,9 @@ impl fmt::Display for SteleError {
                 write!(f, "charter lineage broken at stele row {stele_id}: {why}")
             }
             Self::AlreadyCurrent => f.write_str("the vault is already on this charter"),
+            Self::OperatorMismatch => f.write_str(
+                "genesis was sealed by another operator key than the running charter's royal seal",
+            ),
         }
     }
 }
@@ -349,8 +355,10 @@ impl Stele {
         Ok(count)
     }
 
-    /// Append the genesis row for a royal-sealed charter, or confirm the existing one
-    /// was written under this same charter.
+    /// Append the genesis row for a royal-sealed charter, or confirm the existing one: its
+    /// charter lineage must end at this charter, and the genesis row must carry this royal
+    /// seal's operator key with a royal seal that verifies under it. A vault sealed by
+    /// another operator is refused even when the charter bytes match.
     pub fn ensure_genesis(
         &mut self,
         charter: &SystemCharter<RoyalSealed>,
@@ -362,10 +370,28 @@ impl Stele {
             let current = lineage
                 .last()
                 .is_some_and(|tip| tip.matches(charter.byte_len(), charter.digest()));
-            return if current {
+            if !current {
+                return Err(SteleError::GenesisMismatch);
+            }
+            let genesis_digest = lineage
+                .first()
+                .map(|epoch| epoch.digest)
+                .ok_or(SteleError::GenesisMismatch)?;
+            let sealed_by_operator = first.ed25519_pubkey == royal.operator_pubkey
+                && first.royal_seal_sig.is_some_and(|signature| {
+                    verify_royal_seal(
+                        &RoyalSeal {
+                            operator_pubkey: royal.operator_pubkey,
+                            signature,
+                        },
+                        &genesis_digest,
+                    )
+                    .is_ok()
+                });
+            return if sealed_by_operator {
                 Ok(Genesis::Present(first))
             } else {
-                Err(SteleError::GenesisMismatch)
+                Err(SteleError::OperatorMismatch)
             };
         }
         let payload = genesis_payload(charter.byte_len(), charter.digest());

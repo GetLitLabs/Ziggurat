@@ -59,7 +59,7 @@ fn run_in(
 }
 
 /// The live set is pinned: a job goes live only with a handler and a test in the same commit.
-pub(crate) const LIVE_JOBS: [&str; 23] = [
+pub(crate) const LIVE_JOBS: [&str; 24] = [
     "scribe.stele.append",
     "seed.scaffold.emit",
     "inspect.gate.validate",
@@ -72,6 +72,7 @@ pub(crate) const LIVE_JOBS: [&str; 23] = [
     "ziggurat.daemon.boot",
     "polymorph.workspace.init",
     "polymorph.emit.native",
+    "polymorph.emit.wasm",
     "genesis.charter.version",
     "zerotrace.key.destroy",
     "krypt.death.keyDestroy",
@@ -1061,6 +1062,64 @@ fn polymorph_emit_native_builds_and_records_artifact_digests() -> TestResult {
         assert!(outcome.is_err(), "{refused} should be refused");
         assert_eq!(stele.len()?, 1, "a refused build records nothing");
     }
+    std::fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn polymorph_emit_wasm_builds_offline_or_refuses_a_missing_target() -> TestResult {
+    let root = polymorph_workspace("polywasm")?;
+    // The member must build without std on wasm32.
+    std::fs::write(
+        root.join("crates/tiny/src/lib.rs"),
+        "#![no_std]\npub fn add(a: u32, b: u32) -> u32 {\n    a.wrapping_add(b)\n}\n",
+    )?;
+    let installed = hcc_polymorph::probe()?
+        .installed_targets
+        .iter()
+        .any(|t| t == "wasm32-unknown-unknown");
+    let (outcome, stele) = run_in(
+        &handoff("polymorph.emit.wasm", 2, json!({ "package": "tiny" })),
+        Some(&root),
+    )?;
+    if installed {
+        let out = outcome?;
+        assert_eq!(out["triple"], "wasm32-unknown-unknown");
+        assert_eq!(out["cpu"], Value::Null);
+        assert_eq!(out["target_dir"], "target/polymorph/wasm32-unknown-unknown");
+        assert!(out["artifacts"]
+            .as_array()
+            .ok_or("no artifacts")?
+            .iter()
+            .any(|a| a["path"]
+                .as_str()
+                .is_some_and(|p| p.ends_with("libtiny.rlib"))));
+        let record = String::from_utf8(stele.last()?.ok_or("no row")?.payload)?;
+        assert!(record.contains("triple=wasm32-unknown-unknown\n"));
+    } else {
+        assert!(matches!(
+            outcome,
+            Err(VanguardError::Polymorph(
+                hcc_polymorph::PolymorphError::TargetMissing(_)
+            ))
+        ));
+        assert_eq!(stele.len()?, 1);
+    }
+    let (refused, stele) = run_in(
+        &handoff(
+            "polymorph.emit.wasm",
+            2,
+            json!({ "package": "tiny", "triple": "x86_64-unknown-linux-gnu" }),
+        ),
+        Some(&root),
+    )?;
+    assert!(matches!(
+        refused,
+        Err(VanguardError::Polymorph(
+            hcc_polymorph::PolymorphError::BadTriple(_)
+        ))
+    ));
+    assert_eq!(stele.len()?, 1);
     std::fs::remove_dir_all(&root)?;
     Ok(())
 }
